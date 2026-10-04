@@ -424,6 +424,7 @@ function renderSourceControls() {
   }[state.catalogSource] || '';
   $('catalogSourceBadge').textContent = sourceText;
   $('catalogSourceBadge').classList.toggle('warn', state.catalogSource === 'fallback' || state.catalogSource === 'emergency');
+  updateSourceMismatchWarning(); // TASK CS-v2.6.1 — 원본 언어가 바뀌면 경고도 다시 판정
 }
 
 /*
@@ -494,6 +495,128 @@ function setSourceLanguage(code) {
  * (CS-v2.5까지, 라벨 배열)은 서버의 legacyLabelCodes로 푼다. 카탈로그에 없는
  * 코드는 버리고 그 사실을 알린다 — 조용히 사라지면 "선택이 왜 줄었지"가 된다.
  */
+/*
+ * TASK CS-v2.6.1 — 원본 언어와 실제 입력 언어가 어긋나면 경고만 한다(자동 변경·차단
+ * 없음). 실제 사례: 원본 언어가 기본값 일본어인 채로 한국어 제목을 넣고 번역하면,
+ * 프롬프트가 "The source metadata language is Japanese"라고 잘못 말하게 된다.
+ *
+ * Gemini를 부르지 않는 로컬 판정이다(비용 0). 판정이 애매하면 경고하지 않는 쪽으로
+ * 기운다 — 잘못된 경고가 반복되면 사람들은 경고 자체를 무시하게 된다.
+ *   - 판정에서 빼는 것: 타임스탬프가 있는 줄(트랙리스트 — 영어 곡명이 대부분이라
+ *     한국어 설명도 영어처럼 보이게 만든다), URL, #해시태그, @핸들, 숫자.
+ *   - 한글은 한국어만 쓴다 → 한글이 6자 이상이고 글자의 30% 이상이면 한국어.
+ *   - 일본어는 가나로만 확정한다(가나 3자 이상, 가나+한자가 30% 이상). 한자만 있는
+ *     글은 중국어인지 일본어인지 알 수 없으므로 판정하지 않는다.
+ *   - 로마자는 한중일 문자가 거의 없을 때(5% 이하)만, 15자 이상일 때만.
+ *   - 둘 이상 해당하면 한쪽이 3배 이상 우세할 때만 그쪽, 아니면 판정 안 함.
+ */
+const LATIN_SCRIPT_LANGUAGES = new Set([
+  'af', 'az', 'bs', 'ca', 'cs', 'da', 'de', 'en', 'es', 'et', 'eu', 'fil', 'fi', 'fr', 'gl', 'hr', 'hu', 'id', 'is',
+  'it', 'lt', 'lv', 'ms', 'nl', 'no', 'pl', 'pt', 'ro', 'sk', 'sl', 'sq', 'sv', 'sw', 'tr', 'uz', 'vi', 'zu',
+]);
+
+function expectedScriptFor(code) {
+  const norm = normCode(code);
+  const base = norm.split('-')[0];
+  if (base === 'ko') return 'hangul';
+  if (base === 'ja') return 'japanese';
+  if (base === 'zh') return 'han';
+  if (LATIN_SCRIPT_LANGUAGES.has(base) || norm === 'sr-latn') return 'latin';
+  return null; // 키릴·아랍·태국 문자 등 — 이 판정기가 직접 확인하지 않는 문자
+}
+
+function detectInputScript(title, description) {
+  const text = `${title || ''}\n${description || ''}`
+    .split(/\r?\n/)
+    .filter(line => !/\b\d{1,2}:\d{2}(?::\d{2})?\b/.test(line))
+    .join('\n')
+    .replace(/https?:\/\/\S+|www\.\S+/gi, ' ')
+    .replace(/[#@]\S+/g, ' ')
+    .replace(/[0-9]/g, ' ');
+  const count = (re) => (text.match(re) || []).length;
+  const hangul = count(/[가-힣ㄱ-ㆎ]/g);
+  const kana = count(/[぀-ゟ゠-ヿㇰ-ㇿｦ-ﾟ]/g);
+  const han = count(/[㐀-䶿一-鿿]/g);
+  const latin = count(/[A-Za-zÀ-ɏ]/g);
+  const letters = hangul + kana + han + latin;
+  if (letters < 8) return null;
+  const candidates = [];
+  if (hangul >= 6 && hangul / letters >= 0.3) candidates.push({ script: 'hangul', code: 'ko', name: '한국어', score: hangul });
+  if (kana >= 3 && (kana + han) / letters >= 0.3) candidates.push({ script: 'japanese', code: 'ja', name: '일본어', score: kana + han });
+  if (latin >= 15 && (hangul + kana + han) / letters <= 0.05) candidates.push({ script: 'latin', code: 'en', name: '영어(로마자)', score: latin });
+  if (!candidates.length) return null;
+  candidates.sort((a, b) => b.score - a.score);
+  if (candidates.length > 1 && candidates[0].score < candidates[1].score * 3) return null;
+  return candidates[0];
+}
+
+function sourceMismatch(detected, sourceCode) {
+  if (!detected) return false;
+  const expected = expectedScriptFor(sourceCode);
+  if (expected) return detected.script !== expected;
+  // 판정기가 모르는 문자의 원본 언어(러시아어·태국어 등)에서는 한글/가나만 확실한 불일치로 본다.
+  return detected.script === 'hangul' || detected.script === 'japanese';
+}
+
+function updateSourceMismatchWarning() {
+  const el = $('sourceMismatchWarn');
+  if (!el) return;
+  const detected = detectInputScript($('sourceTitle').value, $('sourceDescription').value);
+  if (!state.catalogReady || !sourceMismatch(detected, state.sourceLanguage)) {
+    el.classList.add('hidden');
+    el.innerHTML = '';
+    return;
+  }
+  const target = catalogEntry(detected.code);
+  const switchButton = target && !isSourceCode(target.code)
+    ? ` <button type="button" class="mini-btn" data-switch-source="${escapeHtml(target.code)}">${escapeHtml(target.label)}로 변경</button>`
+    : '';
+  el.innerHTML = `<strong>⚠ 원문 언어 확인</strong> 입력한 제목·설명은 <strong>${escapeHtml(detected.name)}</strong>로 보이지만 ` +
+    `현재 원본 언어는 <strong>${escapeHtml(languageLabel(state.sourceLanguage))}(${escapeHtml(state.sourceLanguage)})</strong>입니다. ` +
+    `원본 언어 설정을 확인해 주세요. 자동으로 바꾸지는 않습니다.${switchButton}`;
+  el.classList.remove('hidden');
+}
+
+/*
+ * TASK CS-v2.6.1 — "예전에 전체 선택이었나"를 판정한다. 화면에 "83개 지원 · 42개
+ * 선택"이 뜬 원인: CS-v2.5의 전체 선택(라벨 50개)을 코드로 옮기면 그린란드어(유튜브
+ * 미지원)가 빠지고 지역 변형이 합쳐져(독일어 3개→de, 프랑스어 3개→fr …) 42개 코드가
+ * 되고, 거기서 원본(ja)을 빼고 짝 언어(ko)를 더해도 42개다. 사용자가 고른 게 아니라
+ * 이관 과정이 만든 숫자다.
+ *
+ * 두 경우를 판정한다(둘 다 LOCAL_SELECTION_VERSION 표식이 없는 저장분만):
+ *   1) CS-v2.5 이하(라벨 배열): 예전 라벨 전부가 선택돼 있으면 전체 선택.
+ *   2) CS-v2.6.0이 이미 이관해 코드로 저장한 것: 1)의 전체 선택을 이관했을 때 나오는
+ *      코드 집합과 정확히 같으면 전체 선택이었던 것으로 본다. 이미 사용자 PC에
+ *      42개짜리가 저장돼 있어서 1)만 고치면 그 화면은 영영 안 고쳐진다. 사람이
+ *      일부러 정확히 이 42개를 골랐을 가능성은 사실상 없다.
+ * 판정 기준표(예전 라벨 목록)는 서버의 legacyLabelCodes 키를 그대로 쓴다 — 클라이언트에
+ * 예전 50개 목록을 다시 복제하지 않는다(CLAUDE.md 4.5). 이관은 1회만: 저장할 때
+ * 표식을 남기므로 이후 사용자가 언어를 빼도 다시 전체로 되돌아가지 않는다.
+ */
+const LOCAL_SELECTION_VERSION = 2;
+
+function isLegacyFullSelection(restored, targetCodes, partner) {
+  if (Number(restored.version) >= LOCAL_SELECTION_VERSION) return false;
+  const legacyLabels = Object.keys(state.legacyLabelCodes).filter(label => label !== '한국어'); // '한국어'는 예전 목록에 없던 라벨
+  if (!legacyLabels.length) return false; // 서버의 변환표가 없으면(비상 목록) 판정하지 않는다
+  if (!Array.isArray(restored.selectedCodes) && Array.isArray(restored.selectedLabels)) {
+    const chosen = new Set(restored.selectedLabels);
+    return legacyLabels.every(label => chosen.has(label));
+  }
+  if (Array.isArray(restored.selectedCodes)) {
+    const expected = new Set();
+    for (const label of legacyLabels) {
+      const canonical = targetCodes.get(normCode(state.legacyLabelCodes[label]));
+      if (canonical) expected.add(normCode(canonical));
+    }
+    if (partner) expected.add(normCode(partner));
+    const stored = new Set(restored.selectedCodes.map(normCode));
+    return stored.size === expected.size && [...expected].every(code => stored.has(code));
+  }
+  return false;
+}
+
 function applyCatalog(languages, source, legacyLabelCodes) {
   state.catalog = Array.isArray(languages) && languages.length ? [...languages] : [...EMERGENCY_CATALOG];
   state.catalogSource = source;
@@ -520,8 +643,10 @@ function applyCatalog(languages, source, legacyLabelCodes) {
       return kept;
     };
     const selectedRaw = toCodes(restored.selectedCodes, restored.selectedLabels);
-    const selected = selectedRaw ? pick(selectedRaw) : targets.map(lang => lang.code);
     const partner = partnerCode();
+    // TASK CS-v2.6.1 — 예전 "전체 선택"은 새 카탈로그에서도 전체 선택이어야 한다.
+    const legacyFull = isLegacyFullSelection(restored, targetCodes, partner);
+    const selected = (!selectedRaw || legacyFull) ? targets.map(lang => lang.code) : pick(selectedRaw);
     // 예전(라벨) 저장분에는 짝 언어가 원래 있을 수 없었다(한국어가 목록에 없었음).
     // 새 형식(코드) 저장분은 사용자가 일부러 뺐을 수 있으니 건드리지 않는다.
     if (partner && !selected.includes(partner) && !restored.selectedCodes && restored.selectedLabels) selected.push(partner);
@@ -531,10 +656,11 @@ function applyCatalog(languages, source, legacyLabelCodes) {
     for (const result of state.results) {
       if (!result.languageCode && state.legacyLabelCodes[result.language]) result.languageCode = state.legacyLabelCodes[result.language];
     }
-    const dropped = selectedRaw ? selectedRaw.total - pick(selectedRaw).length : 0;
+    const dropped = (selectedRaw && !legacyFull) ? selectedRaw.total - pick(selectedRaw).length : 0;
     state.catalogReady = true;
     state.restoredSelection = null;
-    if (dropped > 0) showToast(`저장돼 있던 선택 중 ${dropped}개는 지금 언어 목록에 없거나 같은 코드로 합쳐져 선택에서 뺐습니다.`);
+    if (legacyFull) showToast(`이전 버전의 "전체 선택"을 새 언어 목록 전체(${selected.length}개)로 옮겼습니다.`);
+    else if (dropped > 0) showToast(`저장돼 있던 선택 중 ${dropped}개는 지금 언어 목록에 없거나 같은 코드로 합쳐져 선택에서 뺐습니다.`);
   }
 
   renderSourceControls();
@@ -681,6 +807,7 @@ async function extractVideo() {
     setSourceMeta(data);
     updateTitleCount();
     saveLocal();
+    updateSourceMismatchWarning(); // TASK CS-v2.6.1
     showToast('제목과 설명을 가져왔습니다.');
   } catch (error) {
     setError('mainError', error.message);
@@ -1304,6 +1431,8 @@ function saveLocal() {
     sourceLanguage: state.sourceLanguage,
     selectedCodes: Array.from(state.selected),
     descriptionScopeCodes: Array.from(state.descriptionScope),
+    // TASK CS-v2.6.1 — 이관을 마쳤다는 표식. isLegacyFullSelection()은 이게 있으면 판정하지 않는다.
+    languageSelectionVersion: LOCAL_SELECTION_VERSION,
     results: state.results,
     resultsSourceKey: state.resultsSourceKey,
     sourceMeta: state.sourceMeta,
@@ -1312,10 +1441,13 @@ function saveLocal() {
   // 카탈로그가 도착하기 전에는 state.selected가 아직 비어 있다. 그때 저장하면
   // (입력 중이거나 창을 닫는 순간) 저장돼 있던 선택이 빈 배열로 덮어써진다 —
   // 그 몇 초 동안은 선택 필드를 저장돼 있던 그대로 둔다.
-  if (!state.catalogReady) {
+  // TASK CS-v2.6.1 — 비상 목록(서버 언어 목록을 못 받음, 10개 남짓)일 때도 같다. 그
+  // 상태의 선택을 저장하면 원래 선택이 10개 이하로 덮이고, 이관 표식까지 남아서 서버가
+  // 돌아와도 전체 선택 이관이 다시는 안 일어난다.
+  if (!state.catalogReady || state.catalogSource === 'emergency') {
     try {
       const previous = JSON.parse(localStorage.getItem(LOCAL_STATE_KEY) || 'null') || {};
-      for (const key of ['selected', 'descriptionScope', 'selectedCodes', 'descriptionScopeCodes']) {
+      for (const key of ['selected', 'descriptionScope', 'selectedCodes', 'descriptionScopeCodes', 'languageSelectionVersion']) {
         if (key in previous) payload[key] = previous[key];
         else delete payload[key];
       }
@@ -1339,6 +1471,7 @@ function restoreLocal() {
     const legacyPayload = !payload.sourceLanguage;
     state.sourceLanguage = payload.sourceLanguage || (state.results.length ? 'ko' : 'ja');
     state.restoredSelection = {
+      version: payload.languageSelectionVersion, // TASK CS-v2.6.1 — 없으면 이관 전(CS-v2.6.0 이하) 저장분
       selectedCodes: payload.selectedCodes,
       selectedLabels: payload.selected,
       descCodes: payload.descriptionScopeCodes,
@@ -1372,8 +1505,15 @@ function setupEvents() {
   });
   $('extractBtn').addEventListener('click', extractVideo);
   $('youtubeUrl').addEventListener('keydown', event => { if (event.key === 'Enter') extractVideo(); });
-  $('sourceTitle').addEventListener('input', () => { invalidateResultsIfSourceChanged(); updateTitleCount(); updateCostEstimate(); saveLocal(); });
-  $('sourceDescription').addEventListener('input', () => { invalidateResultsIfSourceChanged(); updateCostEstimate(); saveLocal(); });
+  $('sourceTitle').addEventListener('input', () => { invalidateResultsIfSourceChanged(); updateTitleCount(); updateCostEstimate(); updateSourceMismatchWarning(); saveLocal(); });
+  $('sourceDescription').addEventListener('input', () => { invalidateResultsIfSourceChanged(); updateCostEstimate(); updateSourceMismatchWarning(); saveLocal(); });
+  // TASK CS-v2.6.1 — 경고 안의 [○○로 변경]은 누를 때만 원본 언어를 바꾼다. 경고는 다시
+  // 그려지므로 컨테이너에 위임한다. setSourceLanguage()를 그대로 써서 결과 초기화·
+  // 등록 계획 무효화·원문 언어 동기화가 드롭다운으로 바꿀 때와 똑같이 일어난다.
+  $('sourceMismatchWarn').addEventListener('click', event => {
+    const button = event.target.closest('[data-switch-source]');
+    if (button) setSourceLanguage(button.dataset.switchSource);
+  });
   document.querySelectorAll('[data-copy-target]').forEach(button => {
     button.addEventListener('click', () => copyText($(button.dataset.copyTarget).value));
   });

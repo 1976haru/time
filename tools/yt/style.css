@@ -89,6 +89,9 @@ textarea { resize: vertical; line-height: 1.6; }
 .catalog-source { margin: -6px 0 12px; color: var(--success); font-size: 12px; font-weight: 700; }
 .catalog-source.warn { color: #ffd166; }
 .warn-text { color: #ffd166; }
+/* TASK CS-v2.6.1 — 원본 언어 불일치 경고. badge.warn과 같은 노란 계열. */
+.source-mismatch { margin-top: 12px; background: rgba(255,209,102,.08); border: 1px solid rgba(255,209,102,.35); color: #ffe3a3; }
+.source-mismatch .mini-btn { margin-left: 6px; }
 .progress-wrap { margin-top: 14px; }
 .progress-track { height: 9px; background: #091426; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; }
 .progress-bar { height: 100%; width: 0; background: linear-gradient(90deg, var(--cyan), var(--primary)); transition: width .25s; }
