@@ -155,7 +155,11 @@ creator-studio/
     삭제되므로, 등록 경로는 항상 `videos.list` → 기존 title/description/categoryId/tags/기존
     localizations 보존 → 병합 → `PUT`의 read-modify-write입니다.
   - `snippet.defaultLanguage`(원문 언어)가 설정돼 있어야 유튜브가 localizations를 받습니다. UI의
-    "원문 언어" 선택이 이 값입니다.
+    "원문 언어" 선택이 이 값이고, 기본값은 번역 화면의 **원본 언어**를 따라갑니다(CS-v2.6).
+  - (CS-v2.6) 번역 화면 맨 위에서 **원본 언어**(기본 일본어)를 고릅니다. 대상 언어 목록은 유튜브
+    공식 지원 언어 목록(`GET /api/yt/languages`, 현재 83개)에서 원본 언어를 뺀 것이며, 공식 목록을
+    못 받으면 내장 목록으로 동작합니다. [일본채널/한국채널 핵심 10개]·[아시아]·[글로벌] 프리셋이
+    있고, 원본이 일본어면 한국어가, 한국어면 일본어가 자동으로 대상에 들어갑니다.
   - 한국어 언어 라벨(`포르투갈어 (브라질)`)을 BCP-47(`pt-BR`)로 바꾸는 표는 `lib/ytLanguages.js`에
     후보 배열로 두고, 런타임에 `i18nLanguages.list`로 받아온 실제 지원 목록과 대조해 첫 지원 코드를
     씁니다(`nl-BE` 미지원 → `nl`). 코드가 겹치면 뒤엣것을 건너뛰고 이유를 보고합니다.

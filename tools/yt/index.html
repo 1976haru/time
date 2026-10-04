@@ -13,7 +13,7 @@
       <div>
         <p class="eyebrow">LOCAL CREATOR TOOL</p>
         <h1>유튜브 추출기 & 번역기</h1>
-        <p class="hero-copy">영상 제목과 설명을 가져오고 최대 50개 언어로 번역합니다. API 키는 내 PC의 <code>.gemini_key</code>에만 보관됩니다.</p>
+        <p class="hero-copy">영상 제목과 설명을 가져오고 유튜브가 지원하는 언어로 번역합니다. API 키는 내 PC의 <code>.gemini_key</code>에만 보관됩니다.</p>
       </div>
       <div id="statusBadges" class="status-badges"></div>
     </header>
@@ -57,6 +57,23 @@
       <div id="sourceMeta" class="source-meta hidden"></div>
       <div id="mainError" class="alert error hidden"></div>
 
+      <!-- TASK CS-v2.6 — 원본 언어. 예전에는 "한국어 원본"이 프롬프트에 박혀 있었다.
+           기본값은 일본어(쇼와 카페 채널). 바꾸면 기존 번역 결과는 비워지고,
+           유튜브 등록 패널의 원문 언어도 같이 바뀐다. -->
+      <div class="source-language-box">
+        <p class="eyebrow">SOURCE LANGUAGE</p>
+        <div class="source-language-row">
+          <label class="label" for="sourceLanguageSelect">원본 언어</label>
+          <select id="sourceLanguageSelect" class="source-language-select" disabled></select>
+        </div>
+        <div class="toolbar source-presets">
+          <span class="hint">빠른 선택:</span>
+          <button class="btn secondary" data-source-preset="ja" type="button">일본어 채널</button>
+          <button class="btn secondary" data-source-preset="ko" type="button">한국어 채널</button>
+          <button class="btn secondary" data-source-preset="en" type="button">영어 채널</button>
+        </div>
+      </div>
+
       <div class="fields-grid">
         <div>
           <div class="field-head">
@@ -83,12 +100,16 @@
         </div>
         <span id="selectedCount" class="pill">0개 선택</span>
       </div>
+      <!-- TASK CS-v2.6 — 언어 목록 출처(YouTube 공식 / 내장 대체 목록). 원본 언어는 이 목록에서 빠진다. -->
+      <p id="catalogSourceBadge" class="catalog-source"></p>
       <div id="translateGate" class="alert hidden"></div>
       <div class="toolbar">
         <button id="selectAllBtn" class="btn secondary">전체 선택</button>
         <button id="clearAllBtn" class="btn secondary">전체 해제</button>
         <button id="corePresetBtn" class="btn secondary">핵심 10개 언어</button>
-        <input id="languageSearch" class="language-search" type="search" placeholder="언어 검색" />
+        <button id="asiaPresetBtn" class="btn secondary">아시아</button>
+        <button id="globalPresetBtn" class="btn secondary">글로벌</button>
+        <input id="languageSearch" class="language-search" type="search" placeholder="언어 검색 (이름 또는 코드)" />
       </div>
       <div id="languageGrid" class="language-grid"></div>
 
@@ -246,12 +267,15 @@
         </div>
         <div>
           <label class="label" for="defaultLanguageSelect">원문 언어 (필수)</label>
+          <!-- TASK CS-v2.6 — 옵션은 언어 카탈로그로 채우고, 값은 번역 화면의 원본 언어를 따라간다.
+               아래 option 3개는 카탈로그가 오기 전 잠깐 보이는 자리표시다. -->
           <select id="defaultLanguageSelect">
-            <option value="ko" selected>한국어 (ko)</option>
-            <option value="ja">일본어 (ja)</option>
+            <option value="ja" selected>일본어 (ja)</option>
+            <option value="ko">한국어 (ko)</option>
             <option value="en">영어 (en)</option>
           </select>
-          <p class="hint">지금 영상에 올라가 있는 제목·설명이 무슨 언어인지입니다. 유튜브는 이 값이 있어야 언어별 제목을 받습니다.</p>
+          <p class="hint">지금 영상에 올라가 있는 제목·설명이 무슨 언어인지입니다. 유튜브는 이 값이 있어야 언어별 제목을 받습니다. 기본값은 번역 화면의 원본 언어입니다.</p>
+          <p id="defaultLanguageHint" class="hint warn-text hidden"></p>
         </div>
       </div>
 

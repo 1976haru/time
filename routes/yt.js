@@ -26,8 +26,19 @@ import {
   TESTING_REFRESH_TOKEN_DAYS,
   youtubeApi,
 } from '../lib/ytOAuth.js';
-import { fetchSupportedLanguages, planLocalizations } from '../lib/ytLanguages.js';
-import { validatePublishPayload, formatPublishProblems } from '../lib/ytPublishValidation.js';
+import {
+  englishLanguageName,
+  fetchSupportedLanguages,
+  getLanguageCatalog,
+  isValidLanguageCode,
+  legacyLabelCodes,
+  maxLanguagesPerRequest,
+  planLocalizations,
+  resolveLanguageCode,
+  sameLanguageCode,
+  sanitizeLanguageLabel,
+} from '../lib/ytLanguages.js';
+import { describeByteRisks, formatPublishProblems, validatePublishPayload } from '../lib/ytPublishValidation.js';
 
 const router = Router();
 const MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
@@ -67,6 +78,75 @@ function resolveModel(requestedModel) {
  * 배운 "이 계정은 thinkingConfig를 거부한다"는 결론이 B 모델에도 잘못
  * 적용돼 조용히 최적화가 빠진다(정확성 버그는 아니지만 불필요한 비용).
  */
+/*
+ * TASK CS-v2.6 — 번역 대상 언어가 라벨 문자열 하나에서 {label, code}로 바뀐다.
+ * 예전 클라이언트(또는 예전 localStorage에서 되살린 "이어서 번역")는 여전히
+ * 라벨 문자열만 보내므로 둘 다 받는다: 문자열이면 lib/ytLanguages.js의 후보
+ * 배열로 코드를 풀어 본다(못 풀어도 라벨만으로 번역은 된다 — 예전 동작).
+ * 코드 형식이 틀리면 조용히 버리지 않고 400이다(resolveModel과 같은 원칙).
+ */
+function badRequest(message) {
+  return Object.assign(new Error(message), { status: 400 });
+}
+
+function parseTargetLanguages(raw) {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set();
+  const languages = [];
+  for (const item of raw) {
+    let label;
+    let code;
+    if (item && typeof item === 'object') {
+      code = String(item.code || item.languageCode || '').trim();
+      label = sanitizeLanguageLabel(item.label || item.language) || code;
+      if (code && !isValidLanguageCode(code)) throw badRequest(`언어 코드 형식이 올바르지 않습니다: "${code.slice(0, 20)}"`);
+    } else {
+      label = sanitizeLanguageLabel(item);
+      code = label ? resolveLanguageCode(label, null).code : '';
+    }
+    if (!label) continue;
+    const entry = { label, code };
+    const key = targetKey(entry);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    languages.push(entry);
+  }
+  return languages;
+}
+
+/** 결과·캐시·재시도 길이 맵이 공통으로 쓰는 언어 식별자. 코드가 있으면 코드. */
+function targetKey(lang) {
+  return lang.code ? `code:${lang.code.toLowerCase()}` : `label:${lang.label}`;
+}
+
+function resultKey(result) {
+  return targetKey({ label: result.language, code: result.languageCode || '' });
+}
+
+/*
+ * 원본 언어. sourceLanguageCode가 없는 요청은 CS-v2.5 이전 클라이언트이고, 그때
+ * 프롬프트는 한국어 원본 고정이었으므로 'ko'가 하위 호환 기본값이다(화면의
+ * 기본값 'ja'와는 별개 — 화면은 항상 명시해서 보낸다).
+ */
+function parseSourceLanguage(body) {
+  const code = String(body?.sourceLanguageCode || '').trim() || 'ko';
+  if (!isValidLanguageCode(code)) throw badRequest(`원본 언어 코드 형식이 올바르지 않습니다: "${code.slice(0, 20)}"`);
+  const label = sanitizeLanguageLabel(body?.sourceLanguageLabel) || code;
+  return {
+    code,
+    label,
+    englishName: englishLanguageName(code, label),
+    isKorean: code.toLowerCase().split('-')[0] === 'ko',
+  };
+}
+
+function assertNoSourceTarget(source, languages) {
+  const clash = languages.filter((lang) => lang.code && sameLanguageCode(lang.code, source.code));
+  if (clash.length) {
+    throw badRequest(`원본 언어(${source.label}, ${source.code})와 같은 언어는 번역 대상이 될 수 없습니다: ${clash.map((x) => x.label).join(', ')}`);
+  }
+}
+
 const skipThinkingConfigByModel = new Map();
 const extractToolsModeByModel = new Map(); // model -> true(결합 tools 지원)/false(미지원)/undefined(아직 모름)
 
@@ -373,8 +453,8 @@ function isRetryableAsPlainRequest(error) {
 function buildLengthRetryNote(languages, retryLengths) {
   if (!retryLengths || !retryLengths.size) return '';
   const lines = languages
-    .filter((lang) => retryLengths.has(lang))
-    .map((lang) => `- ${lang}: previous attempt was ${retryLengths.get(lang)} characters`);
+    .filter((lang) => retryLengths.has(targetKey(lang)))
+    .map((lang) => `- ${lang.label}: previous attempt was ${retryLengths.get(targetKey(lang))} characters`);
   if (!lines.length) return '';
   return `
 
@@ -382,28 +462,88 @@ LENGTH RETRY — every language in this request previously produced a translated
 ${lines.join('\n')}`;
 }
 
-function buildTranslatePromptFull(title, description, languages, retryLengths) {
-  return `You are a professional YouTube metadata localization translator for a Korean YouTube MUSIC PLAYLIST channel. Every video is a music playlist (mood/genre/era-themed background music). Use that context to resolve ambiguous words — e.g. a word that could mean "pop art" or "pop music" always means MUSIC here; a word that could mean "lyrics" or general "text" in a title refers to song content, not literature or visual art.
+/*
+ * TASK CS-v2.6 — 프롬프트가 "Korean ... channel", "Translate the Korean title"로
+ * 원본 언어를 한국어로 못박고 있었다. 일본어 원본(쇼와 카페 채널)에 이걸
+ * 그대로 쓰면 모델이 일본어 제목을 "한국어 원문"으로 받고, 한국어 전용 규칙
+ * (6070=1960·70년대, "첫번째 플레이리스트"=Vol. 1)까지 적용하려 든다. 이제
+ * 원본 언어를 요청에서 받아 명시하고, 한국어 전용 규칙은 source=ko일 때만 넣는다.
+ *
+ * 규칙은 키를 가진 목록으로 조립하고 번호는 마지막에 매긴다: 한국어 전용
+ * 규칙이 빠지면 번호가 당겨지는데, 규칙끼리 "rule 8 below"처럼 번호로 서로
+ * 참조하므로 그 참조도 같이 따라가야 한다({{rule:key}}). source=ko일 때의
+ * 규칙 문장과 번호는 CS-v2.5까지와 같다(2번 규칙에 "[코드]는 빼고"라는 말만
+ * 붙었다 — 대상 언어 목록에 코드를 같이 적게 됐기 때문) — 그동안 실측으로
+ * 다듬어 온 규칙이라(위 TASK 블록들) 손대지 않는다.
+ */
+function buildRuleList(entries) {
+  const list = entries.filter(Boolean);
+  const numberOf = new Map(list.map((rule, i) => [rule.key, i + 1]));
+  return list
+    .map((rule, i) => `${i + 1}. ${rule.text.replace(/\{\{rule:([A-Za-z]+)\}\}/g, (_, key) => String(numberOf.get(key)))}`)
+    .join('\n');
+}
 
-Translate the Korean title and description into every target language listed below.
+function buildTranslateRules(source, scope) {
+  const korean = source.isKorean;
+  const full = scope === 'full';
+  const hashtagExample = korean ? ', e.g. #올드팝, #7080' : '';
+  // #7080은 한국식 연대 해시태그다. 다른 원본에는 중립적인 숫자 예시를 쓴다.
+  const numericTag = korean ? '#7080' : '#1970';
+  const ordinalFallbackRule = full ? 'tags' : 'titleHashtags';
+  return buildRuleList([
+    { key: 'onePerLanguage', text: 'Return exactly one object per requested target language, in the same order.' },
+    { key: 'labelMatch', text: 'language must exactly match the target-language label supplied above (the label only, without the bracketed language code).' },
+    {
+      key: 'noFabrication',
+      text: korean
+        ? "Do not add any fact, year, number, or detail that is not present in the original text. Never expand \"6070\" (or similar) into \"60, 70, 80\" or introduce any decade/number that isn't literally there."
+        : "Do not add any fact, year, number, or detail that is not present in the original text. Never introduce any decade/number that isn't literally there.",
+    },
+    korean && {
+      key: 'koreanDecade',
+      text: `When "6070" (or similar Korean decade shorthand like "7080", "8090") appears${full ? ' as descriptive text' : ''} — not inside a "#" hashtag — it means "the 1960s and 1970s" ("60년대와 70년대"), a common Korean way to write two consecutive decades together. Render it as a natural decade expression in the target language instead of copying the digits unchanged — for example "60s & 70s" (English), "60er & 70er" (German), "60-70-е" (Russian). Do not leave it as "6070" or "607080".`,
+    },
+    { key: 'length', text: 'translatedTitle must be natural and clickable, targeting at most 90 Unicode characters including spaces — leave headroom, do not write up to the limit. Never cut, abbreviate, or truncate the channel/playlist name to make a title fit a length target; if a translation genuinely cannot fit within the limit without cutting the channel name, shorten the rest of the title instead — the channel name must always appear complete.' },
+    { key: 'separator', text: 'If the original title has a structural separator between the main title and the channel/playlist name (such as "|", "-", "ㅣ"), keep an equivalent separator in the translation. Do not merge the two parts together with no separator between them.' },
+    korean && {
+      key: 'koreanOrdinal',
+      text: `If the parenthetical channel/playlist attribution at the end of the title combines a channel name with an ordinal/sequence number (e.g. Korean "(oldpoplounge의 첫번째 플레이리스트)", meaning "(oldpoplounge's first playlist)"), do NOT translate that parenthetical at all. Instead render it in this exact fixed, language-invariant format in every target language: "(<channel name> Vol. <N>)" — keep the channel name exactly as given, convert the Korean ordinal word to its Arabic numeral N (첫번째=1, 두번째=2, 세번째=3, 네번째=4, 다섯번째=5, 여섯번째=6, 일곱번째=7, 여덟번째=8, 아홉번째=9, 열번째=10, and so on), and use the literal abbreviation "Vol." unchanged — never translate "Vol." into another word. Example: "(oldpoplounge의 첫번째 플레이리스트)" becomes "(oldpoplounge Vol. 1)" in every single language, identically. This overrides rule {{rule:${ordinalFallbackRule}}} below for this specific parenthetical only. If the title's parenthetical does not match this "channel name + ordinal" pattern, ignore this rule and follow rule {{rule:${ordinalFallbackRule}}} instead.`,
+    },
+    { key: 'tags', text: 'Preserve tags such as [playlist], [Playlist], and emojis.' },
+    {
+      key: 'titleHashtags',
+      text: full
+        ? `If the original title itself contains hashtags (tokens starting with "#"${hashtagExample}), do NOT include them in translatedTitle at all — omit them entirely, even numeric-looking ones like ${numericTag}. Do not translate them into words either, just remove them. This rule is only about the TITLE; hashtags inside the description are a separate matter (see rule {{rule:descriptionHashtags}} below). Hashtags repeated inside a translated title just add unreadable duplicate text in the target language, and the same hashtags already appear in the description.`
+        : `If the original title contains hashtags (tokens starting with "#"${hashtagExample}), do NOT include them in translatedTitle at all — omit them entirely, even numeric-looking ones like ${numericTag}. Do not translate them into words either, just remove them. Hashtags repeated inside a translated title just add unreadable duplicate text in the target language, and no description is being translated in this request for them to belong to anyway.`,
+    },
+    full && { key: 'descriptionHashtags', text: `Translate normal hashtags naturally, but keep numeric hashtags such as ${numericTag} unchanged.` },
+    full && { key: 'timestamps', text: 'Preserve timestamps and track-list song titles at the end of the description exactly as written. Do not translate those lines.' },
+    { key: 'properNames', text: 'Keep URLs, email addresses, credits, handles, and proper names unchanged unless a standard localized form is clearly appropriate.' },
+    { key: 'noExtras', text: 'Do not add explanations, quotation marks, or extra marketing claims.' },
+  ]);
+}
+
+function buildPromptIntro(source) {
+  return `You are a professional YouTube metadata localization translator for a ${source.englishName} YouTube MUSIC PLAYLIST channel. Every video is a music playlist (mood/genre/era-themed background music). Use that context to resolve ambiguous words — e.g. a word that could mean "pop art" or "pop music" always means MUSIC here; a word that could mean "lyrics" or general "text" in a title refers to song content, not literature or visual art.
+
+The source metadata language is ${source.englishName} (${source.code}).`;
+}
+
+function formatTargetList(languages) {
+  return languages.map((lang, i) => `${i + 1}. ${lang.label}${lang.code ? ` [${lang.code}]` : ''}`).join('\n');
+}
+
+function buildTranslatePromptFull(source, title, description, languages, retryLengths) {
+  return `${buildPromptIntro(source)}
+
+Translate the ${source.englishName} title and description into every target language listed below.
 
 Target languages:
-${languages.map((x, i) => `${i + 1}. ${x}`).join('\n')}
+${formatTargetList(languages)}
 
 Rules:
-1. Return exactly one object per requested target language, in the same order.
-2. language must exactly match the target-language label supplied above.
-3. Do not add any fact, year, number, or detail that is not present in the original text. Never expand "6070" (or similar) into "60, 70, 80" or introduce any decade/number that isn't literally there.
-4. When "6070" (or similar Korean decade shorthand like "7080", "8090") appears as descriptive text — not inside a "#" hashtag — it means "the 1960s and 1970s" ("60년대와 70년대"), a common Korean way to write two consecutive decades together. Render it as a natural decade expression in the target language instead of copying the digits unchanged — for example "60s & 70s" (English), "60er & 70er" (German), "60-70-е" (Russian). Do not leave it as "6070" or "607080".
-5. translatedTitle must be natural and clickable, targeting at most 90 Unicode characters including spaces — leave headroom, do not write up to the limit. Never cut, abbreviate, or truncate the channel/playlist name to make a title fit a length target; if a translation genuinely cannot fit within the limit without cutting the channel name, shorten the rest of the title instead — the channel name must always appear complete.
-6. If the original title has a structural separator between the main title and the channel/playlist name (such as "|", "-", "ㅣ"), keep an equivalent separator in the translation. Do not merge the two parts together with no separator between them.
-7. If the parenthetical channel/playlist attribution at the end of the title combines a channel name with an ordinal/sequence number (e.g. Korean "(oldpoplounge의 첫번째 플레이리스트)", meaning "(oldpoplounge's first playlist)"), do NOT translate that parenthetical at all. Instead render it in this exact fixed, language-invariant format in every target language: "(<channel name> Vol. <N>)" — keep the channel name exactly as given, convert the Korean ordinal word to its Arabic numeral N (첫번째=1, 두번째=2, 세번째=3, 네번째=4, 다섯번째=5, 여섯번째=6, 일곱번째=7, 여덟번째=8, 아홉번째=9, 열번째=10, and so on), and use the literal abbreviation "Vol." unchanged — never translate "Vol." into another word. Example: "(oldpoplounge의 첫번째 플레이리스트)" becomes "(oldpoplounge Vol. 1)" in every single language, identically. This overrides rule 8 below for this specific parenthetical only. If the title's parenthetical does not match this "channel name + ordinal" pattern, ignore this rule and follow rule 8 instead.
-8. Preserve tags such as [playlist], [Playlist], and emojis.
-9. If the original title itself contains hashtags (tokens starting with "#", e.g. #올드팝, #7080), do NOT include them in translatedTitle at all — omit them entirely, even numeric-looking ones like #7080. Do not translate them into words either, just remove them. This rule is only about the TITLE; hashtags inside the description are a separate matter (see rule 10 below). Hashtags repeated inside a translated title just add unreadable duplicate text in the target language, and the same hashtags already appear in the description.
-10. Translate normal hashtags naturally, but keep numeric hashtags such as #7080 unchanged.
-11. Preserve timestamps and track-list song titles at the end of the description exactly as written. Do not translate those lines.
-12. Keep URLs, email addresses, credits, handles, and proper names unchanged unless a standard localized form is clearly appropriate.
-13. Do not add explanations, quotation marks, or extra marketing claims.
+${buildTranslateRules(source, 'full')}
 ${buildLengthRetryNote(languages, retryLengths)}
 
 Original title:
@@ -421,26 +561,16 @@ ${description}`;
  * 동일하게 유지하고, description 전용 규칙(해시태그 번역, 타임스탬프 보존)만
  * 뺐다 — 대상이 없는 규칙을 프롬프트에 남겨봐야 토큰만 쓰고 아무 효과가 없다.
  */
-function buildTranslatePromptTitleOnly(title, languages, retryLengths) {
-  return `You are a professional YouTube metadata localization translator for a Korean YouTube MUSIC PLAYLIST channel. Every video is a music playlist (mood/genre/era-themed background music). Use that context to resolve ambiguous words — e.g. a word that could mean "pop art" or "pop music" always means MUSIC here; a word that could mean "lyrics" or general "text" in a title refers to song content, not literature or visual art.
+function buildTranslatePromptTitleOnly(source, title, languages, retryLengths) {
+  return `${buildPromptIntro(source)}
 
-Translate the Korean title into every target language listed below. Only the title is provided — no description.
+Translate the ${source.englishName} title into every target language listed below. Only the title is provided — no description.
 
 Target languages:
-${languages.map((x, i) => `${i + 1}. ${x}`).join('\n')}
+${formatTargetList(languages)}
 
 Rules:
-1. Return exactly one object per requested target language, in the same order.
-2. language must exactly match the target-language label supplied above.
-3. Do not add any fact, year, number, or detail that is not present in the original text. Never expand "6070" (or similar) into "60, 70, 80" or introduce any decade/number that isn't literally there.
-4. When "6070" (or similar Korean decade shorthand like "7080", "8090") appears — not inside a "#" hashtag — it means "the 1960s and 1970s" ("60년대와 70년대"), a common Korean way to write two consecutive decades together. Render it as a natural decade expression in the target language instead of copying the digits unchanged — for example "60s & 70s" (English), "60er & 70er" (German), "60-70-е" (Russian). Do not leave it as "6070" or "607080".
-5. translatedTitle must be natural and clickable, targeting at most 90 Unicode characters including spaces — leave headroom, do not write up to the limit. Never cut, abbreviate, or truncate the channel/playlist name to make a title fit a length target; if a translation genuinely cannot fit within the limit without cutting the channel name, shorten the rest of the title instead — the channel name must always appear complete.
-6. If the original title has a structural separator between the main title and the channel/playlist name (such as "|", "-", "ㅣ"), keep an equivalent separator in the translation. Do not merge the two parts together with no separator between them.
-7. If the parenthetical channel/playlist attribution at the end of the title combines a channel name with an ordinal/sequence number (e.g. Korean "(oldpoplounge의 첫번째 플레이리스트)", meaning "(oldpoplounge's first playlist)"), do NOT translate that parenthetical at all. Instead render it in this exact fixed, language-invariant format in every target language: "(<channel name> Vol. <N>)" — keep the channel name exactly as given, convert the Korean ordinal word to its Arabic numeral N (첫번째=1, 두번째=2, 세번째=3, 네번째=4, 다섯번째=5, 여섯번째=6, 일곱번째=7, 여덟번째=8, 아홉번째=9, 열번째=10, and so on), and use the literal abbreviation "Vol." unchanged — never translate "Vol." into another word. Example: "(oldpoplounge의 첫번째 플레이리스트)" becomes "(oldpoplounge Vol. 1)" in every single language, identically. This overrides rule 9 below for this specific parenthetical only. If the title's parenthetical does not match this "channel name + ordinal" pattern, ignore this rule and follow rule 9 instead.
-8. Preserve tags such as [playlist], [Playlist], and emojis.
-9. If the original title contains hashtags (tokens starting with "#", e.g. #올드팝, #7080), do NOT include them in translatedTitle at all — omit them entirely, even numeric-looking ones like #7080. Do not translate them into words either, just remove them. Hashtags repeated inside a translated title just add unreadable duplicate text in the target language, and no description is being translated in this request for them to belong to anyway.
-10. Keep URLs, email addresses, credits, handles, and proper names unchanged unless a standard localized form is clearly appropriate.
-11. Do not add explanations, quotation marks, or extra marketing claims.
+${buildTranslateRules(source, 'title')}
 ${buildLengthRetryNote(languages, retryLengths)}
 
 Original title:
@@ -566,6 +696,35 @@ router.get('/models', async (req, res, next) => {
   }
 });
 
+/*
+ * TASK CS-v2.6 — 번역 화면의 언어 목록. 실패해도 절대 에러로 끝나지 않는다:
+ * API 키가 없거나 오프라인이면 내장 대체 목록(source:'fallback')을 돌려줘
+ * 화면이 계속 동작하게 한다. API 키(YOUTUBE_API_KEY)를 먼저 쓰고, 없거나
+ * 실패하면 지금 선택된 OAuth 계정 토큰으로 한 번 더 시도한다. 키/토큰 값은
+ * 응답에도 로그에도 싣지 않는다(3.5).
+ */
+router.get('/languages', async (req, res, next) => {
+  try {
+    const { languages, source } = await getLanguageCatalog([
+      { apiKey: cleanEnv(process.env.YOUTUBE_API_KEY) },
+      async () => {
+        if (!hasClientCredentials()) return null;
+        const account = getAccount('');
+        return account.refreshToken ? { accessToken: await getAccessToken(account.id) } : null;
+      },
+    ]);
+    res.json({
+      source,
+      count: languages.length,
+      languages,
+      legacyLabelCodes: legacyLabelCodes(languages),
+      maxLanguagesPerRequest: maxLanguagesPerRequest(),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.get('/status', (req, res) => {
   const hasGemini = Boolean(currentKey());
   res.json({
@@ -670,7 +829,8 @@ router.post('/translate', async (req, res, next) => {
     }
     const title = String(req.body?.title || '').trim();
     const description = String(req.body?.description || '');
-    const languages = Array.isArray(req.body?.languages) ? req.body.languages.map(String).filter(Boolean) : [];
+    const languages = parseTargetLanguages(req.body?.languages); // TASK CS-v2.6 — [{label, code}]
+    const source = parseSourceLanguage(req.body); // TASK CS-v2.6
     // TASK CS-v2.0 작업 A 요구사항 4 — forcePaid는 "사용자가 비용을 감수하고
     // 누른 버튼"의 신호다. effectiveTier()의 자동 판단(유료 키가 있으면
     // paid)은 그대로 두되, 유료 키가 실제로 없는데 forcePaid가 오면 무료로
@@ -697,13 +857,17 @@ router.post('/translate', async (req, res, next) => {
     // 50 languages in one call for a short description; capping at the full
     // language-list size just guards against a malformed/huge payload, not
     // against a normal batch.
-    if (languages.length > 50) return res.status(400).json({ error: '한 번에 최대 50개 언어까지 처리할 수 있습니다.' });
+    // TASK CS-v2.6 — 50(옛 정적 목록 크기) 고정값이었다. 이제 카탈로그 크기가 상한이다.
+    const maxLanguages = maxLanguagesPerRequest();
+    if (languages.length > maxLanguages) return res.status(400).json({ error: `한 번에 최대 ${maxLanguages}개 언어까지 처리할 수 있습니다.` });
+    // TASK CS-v2.6 — 원본과 같은 언어로의 "번역"은 화면에서 이미 빼지만 서버도 막는다(4.2).
+    assertNoSourceTarget(source, languages);
 
     // TASK CS-v1.8 — cache lookup happens before the batch-size check below:
     // a cached language costs no output tokens, so only the ones we'd
     // actually send to Gemini should count against that budget. This also
     // means a fully-cached request never even builds a Gemini client.
-    const { hit: cachedResults, miss: languagesToFetch } = getCachedTranslations({ model, title, description, languages, scope });
+    const { hit: cachedResults, miss: languagesToFetch } = getCachedTranslations({ model, title, description, languages, scope, sourceLanguage: source.code });
 
     if (languagesToFetch.length > 0) {
       // TASK CS-v1.8 — was count-only. tools/yt/app.js's estimateBatchSize()
@@ -725,6 +889,7 @@ router.post('/translate', async (req, res, next) => {
     let fetchedResults = [];
     let truncated = false;
     let missingLanguages = [];
+    let missingLanguageCodes = []; // TASK CS-v2.6 — missingLanguages(라벨)와 같은 순서의 코드. 화면은 코드로 언어를 식별한다.
     let oversizedTitles = []; // TASK 후속(재조사) — [{language, length}], 응답에도 실어 화면에 이유를 보여준다
 
     if (languagesToFetch.length > 0) {
@@ -732,8 +897,8 @@ router.post('/translate', async (req, res, next) => {
       try {
         const ai = requireGeminiClient('paid');
         const prompt = scope === 'title'
-          ? buildTranslatePromptTitleOnly(title, languagesToFetch)
-          : buildTranslatePromptFull(title, description, languagesToFetch);
+          ? buildTranslatePromptTitleOnly(source, title, languagesToFetch)
+          : buildTranslatePromptFull(source, title, description, languagesToFetch);
         response = await generateTranslation(ai, prompt, scope, languagesToFetch.length, model);
       } catch (geminiError) {
         // TASK CS-v2.0 작업 A 요구사항 1 — 429는 요청 전체를 그냥 끝내지
@@ -748,14 +913,15 @@ router.post('/translate', async (req, res, next) => {
         // 따로 표시할 수 있어야 한다.
         if (Number(geminiError?.status) === 429) {
           const byLanguage = new Map();
-          for (const result of cachedResults) byLanguage.set(result.language, result);
-          const partialResults = languages.map((lang) => byLanguage.get(lang)).filter(Boolean);
+          for (const result of cachedResults) byLanguage.set(resultKey(result), result);
+          const partialResults = languages.map((lang) => byLanguage.get(targetKey(lang))).filter(Boolean);
           return res.status(429).json({
             error: geminiError.message,
             quotaExhausted: true,
             quotaScope: geminiError.dailyLimitReached ? 'daily' : (geminiError.quotaScope || 'unknown'),
             dailyLimitReached: Boolean(geminiError.dailyLimitReached),
-            missingLanguages: languagesToFetch,
+            missingLanguages: languagesToFetch.map((lang) => lang.label),
+            missingLanguageCodes: languagesToFetch.map((lang) => lang.code), // TASK CS-v2.6 — missingLanguages와 같은 순서
             paidKeyConfigured: hasPaidKey(),
             results: partialResults,
             fromCache: cachedResults.map((result) => result.language),
@@ -804,7 +970,8 @@ router.post('/translate', async (req, res, next) => {
         // is no automatic retry-on-truncation loop here to bound.
       }
       fetchedResults = parsed.map((item, index) => ({
-        language: languagesToFetch[index] || String(item.language || ''),
+        language: languagesToFetch[index]?.label || String(item.language || ''),
+        languageCode: languagesToFetch[index]?.code || '', // TASK CS-v2.6 — planLocalizations()가 라벨보다 먼저 쓴다
         translatedTitle: String(item.translatedTitle || '').trim(),
         translatedDescription: String(item.translatedDescription || '').trim(),
       }));
@@ -827,7 +994,7 @@ router.post('/translate', async (req, res, next) => {
       // 바로 이 "조용함"이었다.
       oversizedTitles = fetchedResults
         .filter((r) => Array.from(r.translatedTitle).length > 100)
-        .map((r) => ({ language: r.language, length: Array.from(r.translatedTitle).length }));
+        .map((r) => ({ language: r.language, languageCode: r.languageCode, length: Array.from(r.translatedTitle).length }));
       fetchedResults = fetchedResults.filter((r) => Array.from(r.translatedTitle).length <= 100);
 
       // TASK 후속(자동 재시도) — 100자를 넘은 언어만 골라 "더 짧게 다시
@@ -843,15 +1010,15 @@ router.post('/translate', async (req, res, next) => {
       let stillOversized = oversizedTitles;
       while (stillOversized.length > 0 && oversizedRetryRounds < MAX_OVERSIZE_RETRIES) {
         oversizedRetryRounds += 1;
-        const retryLanguages = stillOversized.map((o) => o.language);
-        const retryLengths = new Map(stillOversized.map((o) => [o.language, o.length]));
+        const retryLanguages = stillOversized.map((o) => ({ label: o.language, code: o.languageCode || '' }));
+        const retryLengths = new Map(retryLanguages.map((lang, i) => [targetKey(lang), stillOversized[i].length]));
 
         let retryResponse;
         try {
           const retryAi = requireGeminiClient('paid');
           const retryPrompt = scope === 'title'
-            ? buildTranslatePromptTitleOnly(title, retryLanguages, retryLengths)
-            : buildTranslatePromptFull(title, description, retryLanguages, retryLengths);
+            ? buildTranslatePromptTitleOnly(source, title, retryLanguages, retryLengths)
+            : buildTranslatePromptFull(source, title, description, retryLanguages, retryLengths);
           retryResponse = await generateTranslation(retryAi, retryPrompt, scope, retryLanguages.length, model);
         } catch {
           // 429/서버 오류 등 — 재시도를 그만두고 남은 언어는 그대로 초과
@@ -871,7 +1038,8 @@ router.post('/translate', async (req, res, next) => {
         }
 
         const retryResults = retryParsed.map((item, index) => ({
-          language: retryLanguages[index] || String(item.language || ''),
+          language: retryLanguages[index]?.label || String(item.language || ''),
+          languageCode: retryLanguages[index]?.code || '',
           translatedTitle: String(item.translatedTitle || '').trim(),
           translatedDescription: String(item.translatedDescription || '').trim(),
         }));
@@ -879,10 +1047,10 @@ router.post('/translate', async (req, res, next) => {
         const respondedLanguages = new Set();
         const nextOversized = [];
         for (const r of retryResults) {
-          respondedLanguages.add(r.language);
+          respondedLanguages.add(resultKey(r));
           const len = Array.from(r.translatedTitle).length;
           if (len > 100) {
-            nextOversized.push({ language: r.language, length: len });
+            nextOversized.push({ language: r.language, languageCode: r.languageCode, length: len });
           } else {
             fetchedResults.push(r);
           }
@@ -890,8 +1058,8 @@ router.post('/translate', async (req, res, next) => {
         // 재시도 응답에 아예 안 실린 언어(모델이 빠뜨림)도 여전히 초과
         // 목록에 남긴다 — 실제 새 길이를 모르니 이전 길이를 그대로 보고한다.
         for (const lang of retryLanguages) {
-          if (!respondedLanguages.has(lang)) {
-            nextOversized.push({ language: lang, length: retryLengths.get(lang) });
+          if (!respondedLanguages.has(targetKey(lang))) {
+            nextOversized.push({ language: lang.label, languageCode: lang.code, length: retryLengths.get(targetKey(lang)) });
           }
         }
         stillOversized = nextOversized;
@@ -910,8 +1078,10 @@ router.post('/translate', async (req, res, next) => {
       // above, or the model just not generating an entry for it) — compute
       // that unconditionally instead of only checking it in the one case
       // we happened to already have a name for.
-      const recoveredLanguages = new Set(fetchedResults.map((r) => r.language));
-      missingLanguages = languagesToFetch.filter((lang) => !recoveredLanguages.has(lang));
+      const recoveredLanguages = new Set(fetchedResults.map(resultKey));
+      const missingEntries = languagesToFetch.filter((lang) => !recoveredLanguages.has(targetKey(lang)));
+      missingLanguages = missingEntries.map((lang) => lang.label);
+      missingLanguageCodes = missingEntries.map((lang) => lang.code);
 
       // TASK 후속 — 429/서버오류(lib/gemini.js가 남김)와 구분되는 세 번째
       // 실패 유형: 호출 자체는 성공했지만 응답이 요청한 언어를 다 못
@@ -953,20 +1123,22 @@ router.post('/translate', async (req, res, next) => {
       // batch included, so the languages that DID complete never cost a
       // second call just because one language in the same batch got cut off.
       if (fetchedResults.length) {
-        setCachedTranslations({ model, title, description, results: fetchedResults, scope });
+        setCachedTranslations({ model, title, description, results: fetchedResults, scope, sourceLanguage: source.code });
       }
     }
 
     const byLanguage = new Map();
-    for (const result of cachedResults) byLanguage.set(result.language, result);
-    for (const result of fetchedResults) byLanguage.set(result.language, result);
-    const results = languages.map((lang) => byLanguage.get(lang)).filter(Boolean);
+    for (const result of cachedResults) byLanguage.set(resultKey(result), result);
+    for (const result of fetchedResults) byLanguage.set(resultKey(result), result);
+    const results = languages.map((lang) => byLanguage.get(targetKey(lang))).filter(Boolean);
 
     res.json({
       results,
       model, // TASK CS-v2.2 작업 A 요구사항 3 — 요청값이 아니라 서버가 실제로 적용한 값(폴백 포함)
       truncated,
       missingLanguages,
+      missingLanguageCodes,
+      sourceLanguageCode: source.code, // TASK CS-v2.6 — 서버가 실제로 프롬프트에 명시한 원본 언어
       oversizedTitles, // TASK 후속(재조사) — [{language, length}], 100자 초과로 제외된 언어와 실제 길이. 화면이 "○○ N자 → 100자 초과" 로 보여줄 수 있게.
       fromCache: cachedResults.map((result) => result.language),
       scope, // TASK CS-v2.1 작업 A 요구사항 4 — 요청값과 다를 수 있으므로(향후 검증 실패 등) 실제 적용값을 응답에 담는다
@@ -986,15 +1158,22 @@ router.post('/regenerate', async (req, res, next) => {
     }
     const title = String(req.body?.title || '').trim();
     const description = String(req.body?.description || '');
-    const language = String(req.body?.language || '').trim();
+    // TASK CS-v2.6 — /translate와 같은 형태로 대상 언어(label+code)와 원본 언어를 받는다.
+    const [target] = parseTargetLanguages([
+      req.body?.languageCode ? { label: req.body?.language, code: req.body.languageCode } : req.body?.language,
+    ]);
+    const source = parseSourceLanguage(req.body);
     const field = req.body?.field === 'description' ? 'description' : 'title';
     const model = resolveModel(req.body?.model); // TASK CS-v2.2 작업 A
-    if (!language) return res.status(400).json({ error: '대상 언어가 없습니다.' });
+    if (!target) return res.status(400).json({ error: '대상 언어가 없습니다.' });
+    assertNoSourceTarget(source, [target]);
     const ai = requireGeminiClient('paid'); // TASK CS-v1.8 — the other paid-tier call site, alongside /translate
 
+    const language = `${target.label}${target.code ? ` [${target.code}]` : ''}`;
+    const sourceNote = `The original is written in ${source.englishName} (${source.code}).`;
     const prompt = field === 'title'
-      ? `Translate and rewrite this YouTube title naturally in ${language}. Maximum 100 Unicode characters. Preserve [playlist] and emojis. Return only the title, with no quotes or explanation.\n\nOriginal title:\n${title}`
-      : `Translate and rewrite this YouTube description naturally in ${language}. Translate normal hashtags, preserve emojis, URLs, timestamps, and track-list song-title lines exactly. Return only the description, with no explanation.\n\nOriginal description:\n${description}`;
+      ? `Translate and rewrite this YouTube title naturally in ${language}. ${sourceNote} Maximum 100 Unicode characters. Preserve [playlist] and emojis. Return only the title, with no quotes or explanation.\n\nOriginal title:\n${title}`
+      : `Translate and rewrite this YouTube description naturally in ${language}. ${sourceNote} Translate normal hashtags, preserve emojis, URLs, timestamps, and track-list song-title lines exactly. Return only the description, with no explanation.\n\nOriginal description:\n${description}`;
 
     let response;
     try {
@@ -1247,6 +1426,8 @@ router.post('/publish-localizations', async (req, res, next) => {
     const videoId = extractVideoId(String(req.body?.videoId || ''));
     if (!videoId) throw Object.assign(new Error('영상 URL 또는 11자리 영상 ID를 입력해 주세요.'), { status: 400 });
     const defaultLanguage = String(req.body?.defaultLanguage || 'ko').trim() || 'ko';
+    // TASK CS-v2.6 — 선택지가 3개 고정에서 카탈로그 전체로 넓어졌으므로 형식을 검사한다.
+    if (!isValidLanguageCode(defaultLanguage)) throw Object.assign(new Error(`원문 언어 코드 형식이 올바르지 않습니다: "${defaultLanguage.slice(0, 20)}"`), { status: 400 });
     const dryRun = Boolean(req.body?.dryRun);
     const translations = Array.isArray(req.body?.translations) ? req.body.translations : [];
     if (!translations.length) throw Object.assign(new Error('등록할 번역 결과가 없습니다.'), { status: 400 });
@@ -1254,7 +1435,7 @@ router.post('/publish-localizations', async (req, res, next) => {
     const account = getAccount(req.body?.accountId);
     const accessToken = await getAccessToken(account.id);
     const supported = await fetchSupportedLanguages({ accessToken });
-    const { planned, skipped } = planLocalizations(translations, supported);
+    const { planned, skipped } = planLocalizations(translations, supported, { defaultLanguage });
 
     const listed = await youtubeApi('videos', { query: { part: 'snippet,localizations', id: videoId }, accountId: account.id });
     const video = listed?.items?.[0];
@@ -1305,6 +1486,14 @@ router.post('/publish-localizations', async (req, res, next) => {
     // existing(예전 등록분) + planned(이번 등록분)를 이미 합친 맵이라, 예전에
     // 등록됐지만 지금 기준으로 초과인 언어도 여기서 같이 걸린다(요구사항 3).
     const problems = validatePublishPayload({ snippet, localizations });
+    // TASK CS-v2.6 — 바이트는 차단하지 않고 측정만 한다(describeByteRisks() 주석 참고).
+    const byteRisks = describeByteRisks({
+      snippet,
+      localizations,
+      plannedCodes: planned.map((p) => p.code),
+      // 처음 설정하는 경우(빈 값)도 '바꾸는' 것이다 — 어느 쪽이든 snippet을 새 값으로 보낸다.
+      defaultLanguageChanging: (video.snippet?.defaultLanguage || '') !== defaultLanguage,
+    });
 
     if (dryRun) {
       return res.json({
@@ -1320,6 +1509,7 @@ router.post('/publish-localizations', async (req, res, next) => {
         overwriting,
         existingCount: Object.keys(existing).length,
         problems,
+        byteRisks,
       });
     }
 

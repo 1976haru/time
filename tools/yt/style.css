@@ -74,6 +74,21 @@ textarea { resize: vertical; line-height: 1.6; }
 .language-item { display: flex; align-items: center; gap: 9px; padding: 10px 11px; border: 1px solid var(--line); border-radius: 11px; background: #0b1729; cursor: pointer; color: #ccd8e9; font-size: 13px; }
 .language-item:hover { border-color: #4c6385; }
 .language-item input { width: 16px; height: 16px; accent-color: var(--primary); }
+/* TASK CS-v2.6 — 언어 항목에 코드를 같이 표시하고, 원본의 짝 언어(일본어 원본의
+   한국어)는 눈에 띄게 한다. 원본 언어 선택 영역과 목록 출처 표시. */
+.language-name { flex: 1 1 auto; min-width: 0; }
+.language-code { color: var(--muted); font-size: 11px; font-weight: 700; font-family: ui-monospace, Consolas, monospace; }
+.language-item.partner { border-color: rgba(62,231,209,.55); background: #0c1c31; color: var(--text); font-weight: 800; }
+.source-language-box { margin-top: 18px; border: 1px solid var(--line); border-radius: 14px; background: #0b1729; padding: 14px 16px; }
+.source-language-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 10px; }
+.source-language-row .label { margin: 0; }
+.source-language-select { flex: 0 1 320px; min-width: 0; border: 1px solid var(--line); border-radius: 12px; background: #091426; color: var(--text); padding: 10px 12px; font-weight: 700; }
+.source-presets { margin: 12px 0 0; align-items: center; }
+.source-presets .hint { margin: 0; }
+.btn.secondary.is-active { border-color: var(--cyan); color: var(--cyan); }
+.catalog-source { margin: -6px 0 12px; color: var(--success); font-size: 12px; font-weight: 700; }
+.catalog-source.warn { color: #ffd166; }
+.warn-text { color: #ffd166; }
 .progress-wrap { margin-top: 14px; }
 .progress-track { height: 9px; background: #091426; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; }
 .progress-bar { height: 100%; width: 0; background: linear-gradient(90deg, var(--cyan), var(--primary)); transition: width .25s; }
@@ -101,6 +116,7 @@ textarea { resize: vertical; line-height: 1.6; }
   .panel { padding: 15px; border-radius: 16px; }
   .input-action-row { grid-template-columns: 1fr; }
   .language-grid { grid-template-columns: 1fr; max-height: 420px; }
+  .source-language-select { flex: 1 1 100%; }
   .section-head, .result-title-row { align-items: flex-start; flex-direction: column; }
   .export-actions { justify-content: flex-start; }
 }

@@ -22,7 +22,7 @@
 | 스토리보드 | `tools/storyboard/` (빌드 산출물) | `routes/story.js` |
 | 썸네일·커버 스튜디오 | `tools/thumbnail/` | `routes/thumbnail.js` |
 
-현재 버전: **CS-v2.5**
+현재 버전: **CS-v2.6**
 
 ---
 
@@ -254,8 +254,46 @@ Console 설정은 채널을 몇 개 늘리든 최초 1회로 끝나고, 계정�
 보고합니다. 이 해석 로직을 복사해서 두 벌로 만들지 말고 `planLocalizations()`를
 재사용하세요.
 
-**라벨 문자열은 `tools/yt/app.js`의 `LANGUAGES` 배열과 정확히 일치해야 합니다.** 오타는
-조용히 언어 하나를 누락시킵니다. 새 라벨을 쓸 때는 코드를 읽어서 확인하세요. 추측 금지.
+**CS-v2.6부터 언어의 식별자는 라벨이 아니라 코드입니다.** 번역기의 대상 언어 목록은
+하드코딩 배열이 아니라 `GET /api/yt/languages`가 주는 카탈로그(`{code, label}`)이고,
+1순위는 `i18nLanguages.list` 공식 목록(API 키 → 없으면 선택된 OAuth 계정 토큰),
+실패하면 `lib/ytLanguages.js`의 `FALLBACK_LANGUAGE_CATALOG`(83개, 2026-10 공식 목록과
+코드 전부 일치 확인)입니다. 응답의 `source`가 `'youtube' | 'fallback'`입니다.
+
+- 번역 결과에는 `languageCode`가 실리고, `planLocalizations()`는 그 코드를 **먼저** 씁니다.
+  위의 라벨 후보 배열(`LANGUAGE_CODE_CANDIDATES`)은 코드가 없는 예전 결과(CS-v2.5 이하
+  localStorage)를 위한 하위 호환 경로입니다 — 지우지 마세요. 예전 라벨 → 코드 변환은 서버가
+  `legacyLabelCodes`로 내려주므로 후보 배열을 클라이언트에 복제하지 마세요.
+- 대상 언어에서 원본 언어는 **아예 빠집니다**(회색 처리 아님). 원본 = 대상 요청은 화면,
+  `/translate`·`/regenerate`(400), `planLocalizations()`(원문 언어와 같은 코드는 skipped)
+  세 군데에서 막습니다.
+- 프리셋(`CORE_PRESET` 등, `tools/yt/app.js`)은 라벨이 아니라 **후보 코드 배열** 목록입니다.
+  카탈로그에 실제로 있는 첫 후보를 씁니다.
+
+### 4.5.1 원본 언어와 번역 프롬프트 (CS-v2.6)
+
+`/translate`·`/regenerate`는 `sourceLanguageCode`/`sourceLanguageLabel`을 받습니다(화면
+기본값은 `ja`, **요청에 없으면 `ko`** — CS-v2.5 이하 클라이언트는 항상 한국어 원본이었기
+때문). 프롬프트는 "The source metadata language is Japanese (ja)."처럼 원본을 명시합니다.
+
+- **6070/7080 연대 규칙과 "첫번째 플레이리스트 → Vol. N" 규칙은 원본이 `ko`일 때만**
+  들어갑니다. 규칙은 `buildRuleList()`가 키로 조립하고 번호를 마지막에 매깁니다 — 규칙끼리
+  "rule 8 below"처럼 번호로 참조하므로 하드코딩 번호를 다시 쓰지 마세요(`{{rule:key}}`).
+  원본이 `ko`일 때의 규칙 문장·번호는 CS-v2.5와 같습니다(2번 규칙의 "[코드] 제외" 문구만 추가).
+- 번역 캐시 키(`lib/ytTranslationCache.js`, `CACHE_VERSION` 4)에 원본 언어가 들어가고, 언어는
+  라벨이 아니라 코드로 묶습니다. 새 caller가 `sourceLanguage`를 빠뜨리면 다른 원본의 결과가
+  캐시 히트로 나옵니다(`scope`와 같은 종류의 함정).
+- 원본 언어를 바꾸면 화면의 기존 결과는 비워지고, 유튜브 등록 패널의 원문 언어
+  (`snippet.defaultLanguage`)도 같이 바뀝니다.
+- **등록을 막는 길이 검증은 여전히 글자 수**(CS-v2.3)입니다. UTF-8 바이트는 dryRun 응답의
+  `byteRisks[]`로 **측정·경고만** 합니다(`describeByteRisks()`). 문서상 제한은
+  `snippet.description` 5000바이트뿐이고 `localizations.(key).description`에는 제한이 적혀
+  있지 않아 `basis: 'documented' | 'undocumented'`로 구분해 보여 줍니다. 실제 영상에 이미
+  5,000바이트를 넘는 설명(원문 5,148, th 8,867바이트)이 저장돼 있었습니다 — 실제 쓰기로는
+  검증하지 않았으므로, 바이트로 **차단**하려면 거부되는 쓰기 사례를 근거로 먼저 확보하세요.
+- 등록은 지금도 `part=snippet,localizations`입니다. 문서상 `part=localizations`만 보내는 것도
+  가능하지만, `defaultLanguageNotSet` 오류 조건이 그 경로에서 어떻게 동작하는지 실측 전이라
+  바꾸지 않았습니다(원문 설명이 5,000바이트를 넘는 영상이라면 그쪽이 더 안전할 수 있음).
 
 ### 4.6 등록 전 길이 검증과 오류 로그 (CS-v2.3)
 

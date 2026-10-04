@@ -1,22 +1,61 @@
-const LANGUAGES = [
-  '광둥어 (홍콩)', '그린란드어', '네덜란드어 (네덜란드)', '네덜란드어 (벨기에)', '노르웨이어',
-  '덴마크어', '독일어 (독일)', '독일어 (스위스)', '독일어 (오스트리아)', '러시아어',
-  '루마니아어', '말레이어', '베트남어', '벵골어 (인도)', '스웨덴어',
-  '스페인어 (멕시코)', '스페인어 (라틴 아메리카)', '스페인어 (스페인)', '아랍어', '영어 (미국)',
-  '영어 (영국)', '영어 (인도)', '영어 (캐나다)', '이탈리아어', '인도네시아어',
-  '일본어', '중국어 (싱가포르)', '태국어', '튀르키예어 (터키어)', '페르시아어',
-  '포르투갈어 (브라질)', '포르투갈어 (포르투갈)', '폴란드어', '프랑스어 (벨기에)', '프랑스어 (스위스)',
-  '프랑스어 (캐나다)', '프랑스어 (프랑스)', '필리핀어', '힌디어', '그리스어',
-  '헝가리어', '체코어', '우크라이나어', '히브리어', '아프리칸스어',
-  '아이슬란드어', '카탈로니아어', '슬로바키아어', '핀란드어', '크로아티아어'
+/*
+ * TASK CS-v2.6 — 번역 대상 언어는 더 이상 이 파일의 하드코딩 라벨 50개가 아니다.
+ * 그 배열에는 '한국어'가 없어서(원문이 한국어라는 전제) 일본어 원본 채널이
+ * 한국어 번역을 만들 수 없었다. 이제 GET /api/yt/languages가 주는 카탈로그
+ * ({code, label}, 1순위는 유튜브 i18nLanguages 공식 목록, 실패하면 서버 내장
+ * 대체 목록)로 화면을 그리고, 언어의 식별자는 라벨이 아니라 코드다.
+ *
+ * EMERGENCY_CATALOG는 서버에 아예 닿지 못했을 때 화면이 비지 않게 하는
+ * 최소한이다(정식 대체 목록은 lib/ytLanguages.js의 FALLBACK_LANGUAGE_CATALOG).
+ * 서버가 없으면 번역 자체가 안 되므로 여기를 크게 키울 이유가 없다.
+ */
+const EMERGENCY_CATALOG = [
+  { code: 'ja', label: '일본어' }, { code: 'ko', label: '한국어' }, { code: 'en', label: '영어' },
+  { code: 'zh-CN', label: '중국어(간체)' }, { code: 'zh-TW', label: '중국어(번체)' }, { code: 'id', label: '인도네시아어' },
+  { code: 'th', label: '태국어' }, { code: 'vi', label: '베트남어' }, { code: 'es-419', label: '스페인어(라틴 아메리카)' },
+  { code: 'pt', label: '포르투갈어(브라질)' }, { code: 'fr', label: '프랑스어' },
 ];
-const CORE_LANGUAGES = new Set([
-  '영어 (미국)', '일본어', '스페인어 (라틴 아메리카)', '포르투갈어 (브라질)', '프랑스어 (프랑스)',
-  '독일어 (독일)', '이탈리아어', '인도네시아어', '태국어', '베트남어'
-]);
+
+// 원본 언어 선택에서 맨 위에 고정하는 언어(두 채널 + 영어).
+const PINNED_SOURCE_CODES = ['ja', 'ko', 'en'];
+// 원본이 이 언어면 짝 언어를 대상에 자동으로 넣는다 — 일본 채널의 한국어,
+// 한국 채널의 일본어는 이 프로젝트에서 빠지면 안 되는 대상이다.
+const PARTNER_LANGUAGE = { ja: 'ko', ko: 'ja' };
+
+/*
+ * 프리셋은 "후보 코드 배열"의 목록이다(앞쪽 우선). 공식 목록의 실제 코드가
+ * 지역형(en-US, zh-Hant …)일 수도, 기본형(en, zh-TW …)일 수도 있어서 카탈로그에
+ * 실제로 있는 첫 후보를 쓴다. 원본 언어는 건너뛴다 — 그래서 CORE에 ko와 ja가
+ * 둘 다 있어도 일본어 원본이면 [한국어, 영어, …], 한국어 원본이면 [일본어,
+ * 영어, …]로 10개가 된다(지시서의 일본채널/한국채널 핵심 10개).
+ */
+const CORE_PRESET = [
+  ['ko'], ['ja'], ['en', 'en-US'], ['zh-CN', 'zh-Hans'], ['zh-TW', 'zh-Hant'], ['id'], ['th'], ['vi'],
+  ['es-419', 'es', 'es-ES'], ['pt-BR', 'pt'], ['fr', 'fr-FR'],
+];
+const CORE_PRESET_SIZE = 10;
+const ASIA_PRESET = [
+  ['ko'], ['ja'], ['zh-CN', 'zh-Hans'], ['zh-TW', 'zh-Hant'], ['zh-HK'], ['th'], ['vi'], ['id'], ['ms'], ['fil', 'tl'],
+  ['hi'], ['bn'], ['km'], ['lo'], ['my'], ['mn'], ['ne'], ['si'], ['ta'], ['te'], ['ur'],
+];
+const GLOBAL_PRESET = [
+  ['en', 'en-US'], ['en-GB'], ['es-419'], ['es', 'es-ES'], ['pt-BR', 'pt'], ['pt-PT'], ['fr', 'fr-FR'], ['fr-CA'],
+  ['de', 'de-DE'], ['it'], ['nl'], ['ru'], ['uk'], ['pl'], ['tr'], ['ar'], ['fa'], ['iw', 'he'], ['hi'], ['id'],
+  ['sv'], ['no', 'nb'], ['da'], ['fi'], ['el'], ['cs'], ['hu'], ['ro'], ['ja'], ['ko'], ['zh-CN', 'zh-Hans'], ['zh-TW', 'zh-Hant'],
+];
 
 const state = {
-  selected: new Set(LANGUAGES),
+  // TASK CS-v2.6 — 언어 카탈로그와 원본 언어. selected/descriptionScope는 이제
+  // 라벨이 아니라 코드의 Set이다. catalogReady 전에는 비어 있고, 저장돼 있던
+  // 선택(restoredSelection)은 카탈로그가 도착한 뒤 applyCatalog()가 옮겨 담는다
+  // — 예전 저장분(라벨)을 코드로 풀려면 서버의 legacyLabelCodes가 필요하기 때문.
+  catalog: [],
+  catalogSource: 'loading', // 'youtube' | 'fallback' | 'emergency' | 'loading'
+  catalogReady: false,
+  legacyLabelCodes: {},
+  restoredSelection: null,
+  sourceLanguage: 'ja',
+  selected: new Set(),
   results: [],
   // TASK CS-v1.8 — which title+description state.results was generated for.
   // "이어서 번역"/hasResultFor() trust state.results as "already translated",
@@ -285,8 +324,10 @@ function updateTitleCount() {
   el.classList.toggle('over', count > 100);
 }
 
+// TASK CS-v2.6 — 원본 언어도 키에 넣는다. 같은 제목이라도 "일본어 원본"으로 번역한
+// 결과와 "한국어 원본"으로 번역한 결과는 다른 프롬프트에서 나온 다른 결과다.
 function currentSourceKey() {
-  return `${$('sourceTitle').value.trim()}\u0000${$('sourceDescription').value}`;
+  return `${state.sourceLanguage}\u0000${$('sourceTitle').value.trim()}\u0000${$('sourceDescription').value}`;
 }
 
 /** Called on every title/description edit — drops results that no longer match what's in the textareas. */
@@ -298,15 +339,235 @@ function invalidateResultsIfSourceChanged() {
   renderResults();
 }
 
+/* ------------------------------------------------------------------ *
+ * TASK CS-v2.6 — 언어 카탈로그·원본 언어
+ * ------------------------------------------------------------------ */
+function normCode(code) {
+  return String(code || '').trim().toLowerCase();
+}
+
+function catalogEntry(code) {
+  const wanted = normCode(code);
+  return state.catalog.find(lang => normCode(lang.code) === wanted) || null;
+}
+
+function languageLabel(code) {
+  return catalogEntry(code)?.label || String(code || '');
+}
+
+function isSourceCode(code) {
+  return normCode(code) === normCode(state.sourceLanguage);
+}
+
+function partnerCode() {
+  const partner = PARTNER_LANGUAGE[normCode(state.sourceLanguage).split('-')[0]];
+  return partner ? catalogEntry(partner)?.code || '' : '';
+}
+
+/*
+ * 대상 언어 목록 = 카탈로그 - 원본 언어. 원본은 회색 처리하지 않고 아예 뺀다
+ * (지시서 우선순위). 짝 언어(일본어 원본의 한국어)와 영어를 맨 앞에 두고
+ * 나머지는 라벨 순 — 가나다순이면 '한국어'가 80개 목록 맨 끝에 묻힌다.
+ */
+function targetCatalog() {
+  const partner = normCode(partnerCode());
+  const rank = (lang) => (normCode(lang.code) === partner ? 0 : normCode(lang.code) === 'en' ? 1 : 2);
+  return state.catalog
+    .filter(lang => !isSourceCode(lang.code))
+    .sort((a, b) => rank(a) - rank(b) || a.label.localeCompare(b.label, 'ko'));
+}
+
+/** 이 결과가 어느 언어 코드인지. 예전 결과(라벨만 있음)는 서버가 준 legacyLabelCodes로 푼다. */
+function resultCode(result) {
+  return result?.languageCode || state.legacyLabelCodes[result?.language] || '';
+}
+
+function resolvePreset(preset, limit = Infinity) {
+  const codes = [];
+  for (const candidates of preset) {
+    if (codes.length >= limit) break;
+    const found = candidates.map(catalogEntry).find(Boolean);
+    if (found && !isSourceCode(found.code) && !codes.includes(found.code)) codes.push(found.code);
+  }
+  return codes;
+}
+
+function corePresetLabel() {
+  const base = normCode(state.sourceLanguage).split('-')[0];
+  if (base === 'ja') return '일본채널 핵심 10개';
+  if (base === 'ko') return '한국채널 핵심 10개';
+  return '핵심 10개 언어';
+}
+
+function languageOptionsHtml(selectedCode) {
+  const pinned = PINNED_SOURCE_CODES.map(catalogEntry).filter(Boolean);
+  const pinnedSet = new Set(pinned.map(lang => normCode(lang.code)));
+  const rest = state.catalog.filter(lang => !pinnedSet.has(normCode(lang.code)));
+  const option = (lang) => `<option value="${escapeHtml(lang.code)}" ${normCode(lang.code) === normCode(selectedCode) ? 'selected' : ''}>${escapeHtml(lang.label)} (${escapeHtml(lang.code)})</option>`;
+  return `<optgroup label="자주 쓰는 언어">${pinned.map(option).join('')}</optgroup>` +
+    `<optgroup label="전체 언어 (${state.catalog.length}개)">${rest.map(option).join('')}</optgroup>`;
+}
+
+function renderSourceControls() {
+  $('sourceLanguageSelect').innerHTML = languageOptionsHtml(state.sourceLanguage);
+  $('sourceLanguageSelect').disabled = !state.catalogReady;
+  document.querySelectorAll('[data-source-preset]').forEach(button => {
+    button.classList.toggle('is-active', isSourceCode(button.dataset.sourcePreset));
+  });
+  $('corePresetBtn').textContent = corePresetLabel();
+  $('descCorePresetBtn').textContent = corePresetLabel();
+  const sourceText = {
+    youtube: 'YouTube 공식 목록',
+    fallback: '내장 목록 (YouTube 목록 조회 실패 — API 키 또는 계정 연결 시 공식 목록 사용)',
+    emergency: '비상 목록 (서버 언어 목록을 불러오지 못함)',
+    loading: '언어 목록 불러오는 중…',
+  }[state.catalogSource] || '';
+  $('catalogSourceBadge').textContent = sourceText;
+  $('catalogSourceBadge').classList.toggle('warn', state.catalogSource === 'fallback' || state.catalogSource === 'emergency');
+}
+
+/*
+ * 유튜브 등록 패널의 원문 언어(snippet.defaultLanguage)는 번역 화면의 원본
+ * 언어를 기본으로 따라간다. 사용자가 등록 패널에서 따로 바꿀 수는 있지만(이미
+ * 올라간 영상의 원문이 다른 경우), 다르면 경고를 띄운다.
+ */
+function syncDefaultLanguageSelect({ followSource }) {
+  const select = $('defaultLanguageSelect');
+  const current = followSource ? state.sourceLanguage : (select.value || state.sourceLanguage);
+  select.innerHTML = languageOptionsHtml(current);
+  if (followSource) {
+    // 기존 리스너(setupPublishEvents)가 'input'에서 미리본 계획을 무효화한다.
+    select.dispatchEvent(new Event('input'));
+  }
+  updateDefaultLanguageHint();
+}
+
+function updateDefaultLanguageHint() {
+  const value = $('defaultLanguageSelect').value;
+  const mismatch = value && !isSourceCode(value);
+  const el = $('defaultLanguageHint');
+  el.textContent = mismatch
+    ? `번역 화면의 원본 언어(${languageLabel(state.sourceLanguage)}, ${state.sourceLanguage})와 다릅니다. 영상에 올라간 원문이 정말 ${languageLabel(value)}인지 확인하세요.`
+    : '';
+  el.classList.toggle('hidden', !mismatch);
+}
+
+function clearResultsForSourceChange() {
+  state.results = [];
+  state.resultsSourceKey = null;
+  state.languageFailCounts.clear();
+  hideTranslateConfirm();
+  hideQuotaChoice();
+  renderResults();
+}
+
+function setSourceLanguage(code) {
+  const entry = catalogEntry(code);
+  if (!entry || isSourceCode(entry.code)) { renderSourceControls(); return; }
+  if (state.translating) {
+    showToast('번역 중에는 원본 언어를 바꿀 수 없습니다.');
+    renderSourceControls();
+    return;
+  }
+  const hadResults = state.results.length > 0;
+  state.sourceLanguage = entry.code;
+  // 원본은 대상에서 빠지고, 짝 언어(일본어 원본 → 한국어)는 반드시 들어간다.
+  state.selected.delete(entry.code);
+  state.descriptionScope.delete(entry.code);
+  for (const lang of [...state.selected]) if (isSourceCode(lang)) state.selected.delete(lang);
+  const partner = partnerCode();
+  if (partner) state.selected.add(partner);
+  // 원본 언어가 바뀌면 기존 결과는 다른 원문을 전제로 만든 것이다. 서버 캐시는
+  // 원본 언어별로 따로 저장돼 있어서, 원래 언어로 되돌리면 대부분 캐시에서 다시 온다.
+  if (hadResults) clearResultsForSourceChange();
+  renderSourceControls();
+  syncDefaultLanguageSelect({ followSource: true });
+  renderLanguages($('languageSearch').value);
+  saveLocal();
+  showToast(hadResults
+    ? `원본 언어가 ${entry.label}(${entry.code})로 바뀌어 기존 번역 결과를 비웠습니다. 되돌리면 캐시에서 다시 불러옵니다.`
+    : `원본 언어: ${entry.label}(${entry.code})`);
+}
+
+/*
+ * 카탈로그 도착 후 1회: 저장돼 있던 선택을 코드로 옮겨 담는다. 예전 저장분
+ * (CS-v2.5까지, 라벨 배열)은 서버의 legacyLabelCodes로 푼다. 카탈로그에 없는
+ * 코드는 버리고 그 사실을 알린다 — 조용히 사라지면 "선택이 왜 줄었지"가 된다.
+ */
+function applyCatalog(languages, source, legacyLabelCodes) {
+  state.catalog = Array.isArray(languages) && languages.length ? [...languages] : [...EMERGENCY_CATALOG];
+  state.catalogSource = source;
+  state.legacyLabelCodes = legacyLabelCodes || {};
+  if (!catalogEntry(state.sourceLanguage)) {
+    state.catalog.push({ code: state.sourceLanguage, label: state.sourceLanguage });
+  }
+
+  if (!state.catalogReady) {
+    const targets = targetCatalog();
+    const targetCodes = new Map(targets.map(lang => [normCode(lang.code), lang.code]));
+    const restored = state.restoredSelection || {};
+    const toCodes = (codes, labels) => {
+      if (Array.isArray(codes)) return { list: codes, total: codes.length };
+      if (Array.isArray(labels)) return { list: labels.map(label => state.legacyLabelCodes[label]).filter(Boolean), total: labels.length };
+      return null;
+    };
+    const pick = (raw) => {
+      const kept = [];
+      for (const code of raw.list) {
+        const canonical = targetCodes.get(normCode(code));
+        if (canonical && !kept.includes(canonical)) kept.push(canonical);
+      }
+      return kept;
+    };
+    const selectedRaw = toCodes(restored.selectedCodes, restored.selectedLabels);
+    const selected = selectedRaw ? pick(selectedRaw) : targets.map(lang => lang.code);
+    const partner = partnerCode();
+    // 예전(라벨) 저장분에는 짝 언어가 원래 있을 수 없었다(한국어가 목록에 없었음).
+    // 새 형식(코드) 저장분은 사용자가 일부러 뺐을 수 있으니 건드리지 않는다.
+    if (partner && !selected.includes(partner) && !restored.selectedCodes && restored.selectedLabels) selected.push(partner);
+    state.selected = new Set(selected);
+    const descRaw = toCodes(restored.descCodes, restored.descLabels);
+    state.descriptionScope = new Set(descRaw ? pick(descRaw).filter(code => state.selected.has(code)) : []);
+    for (const result of state.results) {
+      if (!result.languageCode && state.legacyLabelCodes[result.language]) result.languageCode = state.legacyLabelCodes[result.language];
+    }
+    const dropped = selectedRaw ? selectedRaw.total - pick(selectedRaw).length : 0;
+    state.catalogReady = true;
+    state.restoredSelection = null;
+    if (dropped > 0) showToast(`저장돼 있던 선택 중 ${dropped}개는 지금 언어 목록에 없거나 같은 코드로 합쳐져 선택에서 뺐습니다.`);
+  }
+
+  renderSourceControls();
+  syncDefaultLanguageSelect({ followSource: true });
+  renderLanguages($('languageSearch').value);
+  renderResults();
+  saveLocal();
+}
+
+async function loadLanguageCatalog() {
+  try {
+    const data = await api('/api/yt/languages');
+    applyCatalog(data.languages, data.source === 'youtube' ? 'youtube' : 'fallback', data.legacyLabelCodes);
+  } catch {
+    applyCatalog(EMERGENCY_CATALOG, 'emergency', {});
+  }
+}
+
 function renderLanguages(filter = '') {
   const query = filter.trim().toLowerCase();
-  $('languageGrid').innerHTML = LANGUAGES
-    .filter(lang => lang.toLowerCase().includes(query))
-    .map(lang => `
-      <label class="language-item">
-        <input type="checkbox" value="${escapeHtml(lang)}" ${state.selected.has(lang) ? 'checked' : ''} />
-        <span>${escapeHtml(lang)}</span>
-      </label>`).join('');
+  const partner = normCode(partnerCode());
+  if (!state.catalogReady) {
+    $('languageGrid').innerHTML = '<p class="hint">언어 목록을 불러오는 중…</p>';
+  } else {
+    $('languageGrid').innerHTML = targetCatalog()
+      .filter(lang => lang.label.toLowerCase().includes(query) || normCode(lang.code).includes(query))
+      .map(lang => `
+      <label class="language-item${normCode(lang.code) === partner ? ' partner' : ''}">
+        <input type="checkbox" value="${escapeHtml(lang.code)}" ${state.selected.has(lang.code) ? 'checked' : ''} />
+        <span class="language-name">${escapeHtml(lang.label)}</span>
+        <span class="language-code">${escapeHtml(lang.code)}</span>
+      </label>`).join('') || '<p class="hint">검색 결과가 없습니다.</p>';
+  }
   $('languageGrid').querySelectorAll('input').forEach(input => {
     input.addEventListener('change', () => {
       if (input.checked) state.selected.add(input.value);
@@ -323,15 +584,18 @@ function renderLanguages(filter = '') {
   renderDescScopeGrid();
 }
 
+// TASK CS-v2.6 — "70+" 같은 고정 문구 대신 실제로 불러온 개수를 보여준다.
 function updateSelectedCount() {
-  $('selectedCount').textContent = `${state.selected.size}개 선택`;
+  $('selectedCount').textContent = state.catalogReady
+    ? `${state.catalog.length}개 지원 · ${currentSelectedLanguages().length}개 선택`
+    : '불러오는 중…';
 }
 
 /*
  * TASK CS-v2.1 작업 C 요구사항 1+2 — 설명까지 번역할 언어를 고르는 영역.
  * state.selected(메인 선택)의 부분집합만 보여준다 — 번역 대상이 아닌
- * 언어를 설명 대상으로 고르는 건 의미가 없다. CORE_LANGUAGES 프리셋을
- * 재사용한다(요구사항 2).
+ * 언어를 설명 대상으로 고르는 건 의미가 없다. 핵심 프리셋(CORE_PRESET,
+ * CS-v2.6부터 원본 언어에 따라 바뀜)을 재사용한다(요구사항 2).
  */
 function renderDescScopeGrid() {
   const selectedList = currentSelectedLanguages();
@@ -341,8 +605,9 @@ function renderDescScopeGrid() {
   } else {
     grid.innerHTML = selectedList.map(lang => `
       <label class="language-item">
-        <input type="checkbox" value="${escapeHtml(lang)}" ${state.descriptionScope.has(lang) ? 'checked' : ''} />
-        <span>${escapeHtml(lang)}</span>
+        <input type="checkbox" value="${escapeHtml(lang.code)}" ${state.descriptionScope.has(lang.code) ? 'checked' : ''} />
+        <span class="language-name">${escapeHtml(lang.label)}</span>
+        <span class="language-code">${escapeHtml(lang.code)}</span>
       </label>`).join('');
     grid.querySelectorAll('input').forEach(input => {
       input.addEventListener('change', () => {
@@ -462,10 +727,11 @@ function estimateBatchSize(scope, title, description, totalSelected) {
  * 건너뛴다. upsertResults()가 이미 결과마다 실제 적용된 scope를 저장해
  * 두므로 그걸 그대로 쓴다.
  */
-function hasResultFor(language) {
-  const result = state.results.find(r => r.language === language);
+// TASK CS-v2.6 — lang은 카탈로그 항목({code, label}). 결과와는 코드로 맞춘다.
+function hasResultFor(lang) {
+  const result = state.results.find(r => normCode(resultCode(r)) === normCode(lang.code));
   if (!result) return false;
-  if (state.descriptionScope.has(language) && result.scope !== 'full') return false;
+  if (state.descriptionScope.has(lang.code) && result.scope !== 'full') return false;
   return true;
 }
 
@@ -485,17 +751,19 @@ function pendingLanguages(selectedList) {
 // 화면 반영). scope는 배치(호출) 단위 응답값이라 그 배치의 모든 결과에 같이 붙인다.
 function upsertResults(newResults, scope) {
   for (const result of newResults) {
-    const withScope = scope ? { ...result, scope } : result;
-    const index = state.results.findIndex(r => r.language === result.language);
+    const code = resultCode(result);
+    const withScope = { ...result, languageCode: code, ...(scope ? { scope } : {}) };
+    const index = state.results.findIndex(r => normCode(resultCode(r)) === normCode(code));
     if (index >= 0) state.results[index] = withScope;
     else state.results.push(withScope);
-    state.languageFailCounts.delete(result.language); // TASK CS-v2.1 후속 버그 [1] — 성공하면 연속 실패 카운트 초기화
+    state.languageFailCounts.delete(code); // TASK CS-v2.1 후속 버그 [1] — 성공하면 연속 실패 카운트 초기화
   }
 }
 
 // TASK 후속 — missingLanguages(성공 응답의 일부 누락이든, 429 실패 응답의
 // 미처리 언어든)에 나온 언어의 연속 실패 횟수와 "가장 최근 실패 이유"를
 // 기록한다. reason은 화면에 그대로 노출되는 짧은 한국어 문구다.
+// TASK CS-v2.6 — languages는 언어 코드 배열이다(연속 실패 횟수도 코드로 센다).
 function recordMissing(languages, reason) {
   for (const lang of languages || []) {
     const prev = state.languageFailCounts.get(lang);
@@ -520,18 +788,21 @@ function quotaFailReason(error) {
  */
 function pruneDescriptionScope() {
   for (const lang of [...state.descriptionScope]) {
-    if (!state.selected.has(lang)) state.descriptionScope.delete(lang);
+    if (!state.selected.has(lang) || isSourceCode(lang)) state.descriptionScope.delete(lang);
   }
 }
 
 function splitByDescriptionScope(languages) {
-  const full = languages.filter(lang => state.descriptionScope.has(lang));
-  const titleOnly = languages.filter(lang => !state.descriptionScope.has(lang));
+  const full = languages.filter(lang => state.descriptionScope.has(lang.code));
+  const titleOnly = languages.filter(lang => !state.descriptionScope.has(lang.code));
   return { full, titleOnly };
 }
 
+// TASK CS-v2.6 — 선택된 대상 언어를 화면 순서대로, {code, label} 항목으로 돌려준다.
+// 원본 언어는 targetCatalog()에서 이미 빠져 있어 여기 섞일 수 없다.
 function currentSelectedLanguages() {
-  return LANGUAGES.filter(lang => state.selected.has(lang));
+  if (!state.catalogReady) return [];
+  return targetCatalog().filter(lang => state.selected.has(lang.code));
 }
 
 function updateContinueButton() {
@@ -566,11 +837,11 @@ function renderPendingLanguages() {
   const expanded = !listEl.classList.contains('hidden');
   $('pendingToggleBtn').textContent = `${expanded ? '남은 언어 접기' : '남은 언어 보기'} (${pending.length}개)`;
   listEl.innerHTML = pending.map(lang => {
-    const fail = state.languageFailCounts.get(lang);
+    const fail = state.languageFailCounts.get(lang.code);
     // TASK 후속 — "3회 연속 실패"만으로는 기다릴지 포기할지 판단이 안 된다는
     // 지적대로, 원인까지 한 줄에 붙인다: "3회 연속 실패 (한도 초과)".
     const failNote = fail ? ` <span class="fail-note">(${fail.count}회 연속 실패 (${escapeHtml(fail.reason)}))</span>` : '';
-    return `<div>${escapeHtml(lang)}${failNote}</div>`;
+    return `<div>${escapeHtml(lang.label)} <span class="language-code">${escapeHtml(lang.code)}</span>${failNote}</div>`;
   }).join('');
 }
 
@@ -588,7 +859,7 @@ function describeProgress(overallLanguages) {
   const stillPending = pendingLanguages(overallLanguages);
   const doneCount = overallLanguages.length - stillPending.length;
   if (!stillPending.length) return `${doneCount}개 완료 — 전부 끝났습니다`;
-  const preview = stillPending.slice(0, 8).join(', ') + (stillPending.length > 8 ? ` 외 ${stillPending.length - 8}개` : '');
+  const preview = stillPending.slice(0, 8).map(lang => lang.label).join(', ') + (stillPending.length > 8 ? ` 외 ${stillPending.length - 8}개` : '');
   return `${doneCount}개 완료, ${stillPending.length}개 남음: ${preview}`;
 }
 
@@ -604,17 +875,29 @@ async function runOneScopeGroup(overallLanguages, languages, scope, { forcePaid 
     const batch = batches[i];
     const data = await api('/api/yt/translate', {
       method: 'POST',
-      body: JSON.stringify({ title, description, languages: batch, scope, model: state.model, ...(forcePaid ? { forcePaid: true } : {}) }),
+      body: JSON.stringify({
+        title,
+        description,
+        // TASK CS-v2.6 — 라벨만이 아니라 코드도 보낸다. 서버는 코드로 캐시·중복·원본 충돌을 판단한다.
+        languages: batch.map(({ code, label }) => ({ code, label })),
+        sourceLanguageCode: state.sourceLanguage,
+        sourceLanguageLabel: languageLabel(state.sourceLanguage),
+        scope,
+        model: state.model,
+        ...(forcePaid ? { forcePaid: true } : {}),
+      }),
     });
     cacheHitCount += data.fromCache?.length || 0;
     if (data.missingLanguages?.length) {
-      missing.push(...data.missingLanguages);
+      // TASK CS-v2.6 — missingLanguageCodes는 missingLanguages(라벨)와 같은 순서다.
+      const missingCodes = data.missingLanguages.map((label, i) => data.missingLanguageCodes?.[i] || state.legacyLabelCodes[label] || label);
+      missing.push(...missingCodes);
       // TASK 후속(재조사) — 100자 초과로 빠진 언어는 실제 길이까지 보여준다
       // ("스웨덴어 139자 → 100자 초과로 제외") — 이게 오늘 실패의 실제
       // 원인이었는데 지금까지는 '응답에서 누락'으로만 뭉뚱그려져 원인
       // 파악이 안 됐다. 나머지(오버사이즈가 아닌 것)만 기존처럼 잘림/누락으로 구분.
-      const oversizedByLang = new Map((data.oversizedTitles || []).map((o) => [o.language, o.length]));
-      for (const lang of data.missingLanguages) {
+      const oversizedByLang = new Map((data.oversizedTitles || []).map((o) => [o.languageCode || o.language, o.length]));
+      for (const lang of missingCodes) {
         const reason = oversizedByLang.has(lang)
           ? `${oversizedByLang.get(lang)}자 → 100자 초과로 제외`
           : (data.truncated ? '응답 잘림' : '응답에서 누락');
@@ -696,7 +979,7 @@ async function runScopedTranslate(languagesToProcess, { resetResults, forcePaid 
     if (error.quotaExhausted) {
       quotaError = error;
       upsertResults(error.results || [], error.scope);
-      recordMissing(error.missingLanguages, quotaFailReason(error)); // TASK 후속 — 429로 못 받은 언어도 이유와 함께 집계
+      recordMissing((error.missingLanguages || []).map((label, i) => error.missingLanguageCodes?.[i] || state.legacyLabelCodes[label] || label), quotaFailReason(error)); // TASK 후속 — 429로 못 받은 언어도 이유와 함께 집계
       renderResults();
       renderPendingLanguages();
       saveLocal();
@@ -851,7 +1134,7 @@ function renderResults() {
       <article class="result-card" data-index="${index}">
         <div class="result-title-row">
           <div style="display:flex;align-items:center;gap:10px">
-            <h3>${escapeHtml(result.language)}</h3>
+            <h3>${escapeHtml(result.language)} <span class="language-code">${escapeHtml(resultCode(result))}</span></h3>
             <span class="pill" title="이 언어에 실제로 적용된 번역 범위">${result.scope === 'full' ? '제목+설명' : '제목만'}</span>
           </div>
           <div class="result-actions">
@@ -934,6 +1217,9 @@ function renderResults() {
               title: $('sourceTitle').value,
               description: $('sourceDescription').value,
               language: result.language,
+              languageCode: resultCode(result), // TASK CS-v2.6
+              sourceLanguageCode: state.sourceLanguage,
+              sourceLanguageLabel: languageLabel(state.sourceLanguage),
               field,
               model: state.model,
             })
@@ -979,16 +1265,23 @@ function download(content, filename, type) {
 }
 
 function exportCsv() {
-  const rows = [['언어', '번역 제목', '번역 설명'], ...state.results.map(x => [x.language, x.translatedTitle, x.translatedDescription])];
+  // TASK CS-v2.6 — 코드 열은 맨 뒤에 붙인다(기존 열 순서를 쓰던 사람이 깨지지 않게).
+  const rows = [['언어', '번역 제목', '번역 설명', '언어 코드'], ...state.results.map(x => [x.language, x.translatedTitle, x.translatedDescription, resultCode(x)])];
   const csv = rows.map(row => row.map(csvEscape).join(',')).join('\r\n');
   download('﻿' + csv, 'youtube_translations.csv', 'text/csv;charset=utf-8');
 }
 
 function exportJson() {
   const payload = {
-    source: { title: $('sourceTitle').value, description: $('sourceDescription').value, meta: state.sourceMeta },
+    source: { title: $('sourceTitle').value, description: $('sourceDescription').value, sourceLanguage: state.sourceLanguage, meta: state.sourceMeta },
     // _regenSourceKey is internal regenerate-confirm bookkeeping (CS-v1.8 task D) — not part of the exported data.
-    translations: state.results.map(({ language, translatedTitle, translatedDescription, scope }) => ({ language, translatedTitle, translatedDescription, scope })),
+    translations: state.results.map((result) => ({
+      language: result.language,
+      languageCode: resultCode(result),
+      translatedTitle: result.translatedTitle,
+      translatedDescription: result.translatedDescription,
+      scope: result.scope,
+    })),
   };
   download(JSON.stringify(payload, null, 2), 'youtube_translations.json', 'application/json;charset=utf-8');
 }
@@ -998,36 +1291,68 @@ function copyAll() {
   copyText(text);
 }
 
+const LOCAL_STATE_KEY = 'youtubeTranslatorLocalState';
+
 function saveLocal() {
   const payload = {
     url: $('youtubeUrl')?.value || '',
     title: $('sourceTitle')?.value || '',
     description: $('sourceDescription')?.value || '',
-    selected: Array.from(state.selected),
-    descriptionScope: Array.from(state.descriptionScope),
+    // TASK CS-v2.6 — 선택은 코드로 저장한다(selectedCodes). 예전 키(selected,
+    // descriptionScope — 라벨 배열)는 쓰지 않는다: 같은 키에 코드를 넣으면 예전
+    // 형식인지 새 형식인지 구분할 수 없게 된다.
+    sourceLanguage: state.sourceLanguage,
+    selectedCodes: Array.from(state.selected),
+    descriptionScopeCodes: Array.from(state.descriptionScope),
     results: state.results,
     resultsSourceKey: state.resultsSourceKey,
     sourceMeta: state.sourceMeta,
     model: state.model, // TASK CS-v2.2 작업 C 요구사항 2 — 다음 실행에도 유지
   };
-  localStorage.setItem('youtubeTranslatorLocalState', JSON.stringify(payload));
+  // 카탈로그가 도착하기 전에는 state.selected가 아직 비어 있다. 그때 저장하면
+  // (입력 중이거나 창을 닫는 순간) 저장돼 있던 선택이 빈 배열로 덮어써진다 —
+  // 그 몇 초 동안은 선택 필드를 저장돼 있던 그대로 둔다.
+  if (!state.catalogReady) {
+    try {
+      const previous = JSON.parse(localStorage.getItem(LOCAL_STATE_KEY) || 'null') || {};
+      for (const key of ['selected', 'descriptionScope', 'selectedCodes', 'descriptionScopeCodes']) {
+        if (key in previous) payload[key] = previous[key];
+        else delete payload[key];
+      }
+    } catch { /* corrupted — nothing worth preserving */ }
+  }
+  try { localStorage.setItem(LOCAL_STATE_KEY, JSON.stringify(payload)); } catch { /* storage full/blocked — state stays in memory */ }
 }
 
 function restoreLocal() {
   try {
-    const payload = JSON.parse(localStorage.getItem('youtubeTranslatorLocalState') || 'null');
+    const payload = JSON.parse(localStorage.getItem(LOCAL_STATE_KEY) || 'null');
     if (!payload) return;
     $('youtubeUrl').value = payload.url || '';
     $('sourceTitle').value = payload.title || '';
     $('sourceDescription').value = payload.description || '';
-    if (Array.isArray(payload.selected)) state.selected = new Set(payload.selected);
-    if (Array.isArray(payload.descriptionScope)) state.descriptionScope = new Set(payload.descriptionScope);
     if (Array.isArray(payload.results)) state.results = payload.results;
+    // TASK CS-v2.6 — 원본 언어가 저장돼 있지 않은 건 CS-v2.5 이전 저장분이다. 그때의
+    // 번역은 전부 "한국어 원본" 프롬프트로 만들어졌으므로, 결과가 남아 있으면 원본을
+    // ko로 복원해 그 결과가 계속 유효하게 둔다(기본값 ja로 두면 결과는 남아 있는데
+    // 원본 언어 표시는 일본어인 어긋난 상태가 된다). 결과가 없으면 새 기본값 ja.
+    const legacyPayload = !payload.sourceLanguage;
+    state.sourceLanguage = payload.sourceLanguage || (state.results.length ? 'ko' : 'ja');
+    state.restoredSelection = {
+      selectedCodes: payload.selectedCodes,
+      selectedLabels: payload.selected,
+      descCodes: payload.descriptionScopeCodes,
+      descLabels: payload.descriptionScope,
+    };
     // TASK CS-v1.8 — payload.resultsSourceKey is missing on state saved
     // before this field existed; title/description were saved in the same
     // snapshot as results, so currentSourceKey() (now that both are set
     // above) is the correct value for that older data too.
-    state.resultsSourceKey = payload.resultsSourceKey ?? (state.results.length ? currentSourceKey() : null);
+    // TASK CS-v2.6 — 예전 키에는 원본 언어 칸이 없다. 앞에 붙여 새 형식으로 맞춘다.
+    const storedKey = legacyPayload && typeof payload.resultsSourceKey === 'string'
+      ? `${state.sourceLanguage}\u0000${payload.resultsSourceKey}`
+      : payload.resultsSourceKey;
+    state.resultsSourceKey = storedKey ?? (state.results.length ? currentSourceKey() : null);
     state.sourceMeta = payload.sourceMeta || null;
     if (payload.model) state.model = payload.model; // TASK CS-v2.2 — 없으면 loadStatus()가 서버 기본값으로 채운다
     setSourceMeta(state.sourceMeta);
@@ -1052,15 +1377,23 @@ function setupEvents() {
   document.querySelectorAll('[data-copy-target]').forEach(button => {
     button.addEventListener('click', () => copyText($(button.dataset.copyTarget).value));
   });
-  $('selectAllBtn').addEventListener('click', () => { state.selected = new Set(LANGUAGES); renderLanguages($('languageSearch').value); saveLocal(); });
+  // TASK CS-v2.6 — 전체 선택은 "원본을 뺀 카탈로그 전체"다.
+  $('selectAllBtn').addEventListener('click', () => { state.selected = new Set(targetCatalog().map(lang => lang.code)); renderLanguages($('languageSearch').value); saveLocal(); });
   $('clearAllBtn').addEventListener('click', () => { state.selected.clear(); renderLanguages($('languageSearch').value); saveLocal(); });
-  $('corePresetBtn').addEventListener('click', () => { state.selected = new Set(CORE_LANGUAGES); renderLanguages($('languageSearch').value); saveLocal(); });
+  $('corePresetBtn').addEventListener('click', () => { state.selected = new Set(resolvePreset(CORE_PRESET, CORE_PRESET_SIZE)); renderLanguages($('languageSearch').value); saveLocal(); });
+  $('asiaPresetBtn').addEventListener('click', () => { state.selected = new Set(resolvePreset(ASIA_PRESET)); renderLanguages($('languageSearch').value); saveLocal(); });
+  $('globalPresetBtn').addEventListener('click', () => { state.selected = new Set(resolvePreset(GLOBAL_PRESET)); renderLanguages($('languageSearch').value); saveLocal(); });
   $('languageSearch').addEventListener('input', event => renderLanguages(event.target.value));
-  // TASK CS-v2.1 작업 C 요구사항 2 — CORE_LANGUAGES를 설명 대상 프리셋으로도
+  $('sourceLanguageSelect').addEventListener('change', event => setSourceLanguage(event.target.value));
+  document.querySelectorAll('[data-source-preset]').forEach(button => {
+    button.addEventListener('click', () => setSourceLanguage(button.dataset.sourcePreset));
+  });
+  // TASK CS-v2.1 작업 C 요구사항 2 — 핵심 프리셋을 설명 대상 프리셋으로도
   // 재사용. state.selected와의 교집합만 적용한다(번역 대상이 아닌 언어를
-  // 설명 대상으로 넣는 건 의미가 없다).
+  // 설명 대상으로 넣는 건 의미가 없다). TASK CS-v2.6 — 원본 언어에 따라 바뀌는
+  // 같은 프리셋(일본채널/한국채널 핵심 10개)을 쓴다.
   $('descCorePresetBtn').addEventListener('click', () => {
-    state.descriptionScope = new Set([...CORE_LANGUAGES].filter(lang => state.selected.has(lang)));
+    state.descriptionScope = new Set(resolvePreset(CORE_PRESET, CORE_PRESET_SIZE).filter(code => state.selected.has(code)));
     renderDescScopeGrid();
     saveLocal();
   });
@@ -1113,10 +1446,12 @@ function setupEvents() {
 }
 
 restoreLocal();
+renderSourceControls();
 renderLanguages();
 setupEvents();
 loadStatus();
 loadModelList();
+loadLanguageCatalog(); // TASK CS-v2.6 — 실패해도 비상 목록으로 그린다(화면을 막지 않는다)
 
 /* ------------------------------------------------------------------ *
  * TASK CS-v1.6 — 유튜브에 번역 자동 등록 (videos.update: localizations)
@@ -1379,6 +1714,7 @@ function currentTranslationsForPublish() {
     .filter((result) => (result.translatedTitle || '').trim())
     .map((result) => ({
       language: result.language,
+      languageCode: resultCode(result), // TASK CS-v2.6 — 서버 planLocalizations()가 라벨보다 먼저 쓴다
       translatedTitle: result.translatedTitle,
       translatedDescription: result.translatedDescription,
     }));
@@ -1413,12 +1749,30 @@ function renderPublishReport(data, applied) {
         `<li>${escapeHtml(publishProblemLabel(p.field))} — ${p.length}자 (최대 ${p.limit}자)</li>`).join('') + '</ul>');
   }
 
+  // TASK CS-v2.6 — 5000바이트 초과는 막지 않고 알린다. 문서상 제한(원문 설명)과
+  // 문서에 없는 항목(번역 설명 — 참고용)을 구분하고, 이번에 새로 보내는 것과 이미
+  // 유튜브에 있던 것도 구분한다(lib/ytPublishValidation.js describeByteRisks()).
+  const risks = data.byteRisks || [];
+  if (risks.length) {
+    const line = (r) => `<li>${escapeHtml(publishProblemLabel(r.field))} — ${r.bytes.toLocaleString('ko-KR')}바이트 (${r.chars.toLocaleString('ko-KR')}자)` +
+      ` <span class="hint">${r.basis === 'documented' ? '[문서상 제한 5000바이트]' : '[문서에 제한 없음 · 참고]'} ${escapeHtml(r.note)}</span></li>`;
+    const main = risks.filter((r) => r.origin !== 'existing');
+    const existingRisks = risks.filter((r) => r.origin === 'existing');
+    if (main.length) {
+      parts.push(`<p class="warn">⚠ 설명 5000바이트(UTF-8) 초과 ${main.length}건 — 등록을 막지는 않습니다. 실제로 거부될지는 실측되지 않았습니다.</p><ul>` + main.map(line).join('') + '</ul>');
+    }
+    if (existingRisks.length) {
+      parts.push(`<details><summary class="hint">이미 유튜브에 저장된 번역 설명 중 5000바이트 초과 ${existingRisks.length}건 (참고)</summary><ul>` + existingRisks.map(line).join('') + '</ul></details>');
+    }
+  }
   if (rows.length) {
     parts.push(`<p class="ok">${applied ? '등록됨' : '등록 예정'} ${rows.length}개 언어</p><ul>` + rows.map((row) => {
       const isOverwrite = overwriting.has(row.code);
       return `<li><code>${escapeHtml(row.code)}</code> ${escapeHtml(row.language)}` +
         (isOverwrite ? ' <span class="warn">(기존 번역 덮어씀)</span>' : '') +
         (row.note ? ` <span class="warn">— ${escapeHtml(row.note)}</span>` : '') +
+        // TASK CS-v2.6 — 설명이 실리는 언어는 글자 수와 UTF-8 바이트를 같이 보여 준다.
+        (row.descriptionChars ? ` <span class="hint">· 설명 ${row.descriptionChars.toLocaleString('ko-KR')}자 / ${Number(row.descriptionBytes || 0).toLocaleString('ko-KR')}바이트</span>` : '') +
         (row.title ? `<br /><span style="color:#cfe0f6">${escapeHtml(row.title)}</span>` : '') + '</li>';
     }).join('') + '</ul>');
   }
@@ -1564,6 +1918,11 @@ function setupPublishEvents() {
   // Any change to the target invalidates the previewed plan.
   ['publishVideoId', 'defaultLanguageSelect'].forEach((id) => {
     $(id).addEventListener('input', () => { publishState.plan = null; $('applyPublishBtn').disabled = true; });
+  });
+  $('defaultLanguageSelect').addEventListener('change', () => {
+    publishState.plan = null;
+    $('applyPublishBtn').disabled = true;
+    updateDefaultLanguageHint(); // TASK CS-v2.6 — 번역 화면의 원본 언어와 다르면 경고
   });
   // The OAuth popup posts back here when Google finishes the round trip.
   window.addEventListener('message', (event) => {
