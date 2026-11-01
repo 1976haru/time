@@ -335,6 +335,8 @@ function salvageJsonObjects(text) {
  * about what a safe batch looks like.
  */
 const TRANSLATE_TOKEN_BUDGET = 12000;
+// Keep this cap in sync with tools/yt/app.js; catalogue size is not request batch size.
+const MAX_TRANSLATE_BATCH_LANGUAGES = 12;
 
 // TASK CS-v2.1 작업 A 요구사항 3 — scope:'title'이면 언어당 출력량을 description이
 // 아니라 title 길이로 추정한다. title은 description보다 30배 이상 짧아
@@ -346,7 +348,7 @@ const TRANSLATE_TOKEN_BUDGET = 12000;
 function estimateMaxBatchSize(scope, title, description) {
   const baseLength = Array.from(String(scope === 'title' ? title : description) || '').length;
   const perLanguageTokens = (baseLength + 100) / 2;
-  return Math.max(1, Math.floor(TRANSLATE_TOKEN_BUDGET / perLanguageTokens));
+  return Math.max(1, Math.min(MAX_TRANSLATE_BATCH_LANGUAGES, Math.floor(TRANSLATE_TOKEN_BUDGET / perLanguageTokens)));
 }
 
 const TRANSLATE_RESPONSE_SCHEMA_FULL = {
