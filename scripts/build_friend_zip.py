@@ -35,6 +35,8 @@ def main() -> int:
     output = ROOT / NAME
     safe = []
     for path in tracked:
+        if path == ".env.example":
+            continue
         if not path or path.startswith(".github/") or path.startswith(".git/"):
             continue
         if SENSITIVE_PATH.search(path):
