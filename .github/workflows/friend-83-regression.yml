@@ -23,7 +23,7 @@ jobs:
           node --check tools/yt/app.js
           node --check server.js
       - name: OAuth and 83 language tests
-        run: node --test tests/ytOAuth.multiClient.test.mjs tests/ytLanguages.friend83.test.mjs
+        run: node --test tests/ytOAuth.multiClient.test.mjs tests/ytLanguages.friend83.test.mjs tests/ytLargeBatchStall.test.mjs
       - name: Server language endpoint smoke test
         run: |
           node server.js > /tmp/creator-studio.log 2>&1 &
