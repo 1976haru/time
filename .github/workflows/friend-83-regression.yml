@@ -1,0 +1,26 @@
+name: Friend 83 Language Translator QA
+on:
+  push:
+    branches:
+      - 'release/creator-studio-83-multiaccount-friend-20261101'
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Source syntax verification
+        run: |
+          node --check lib/ytOAuth.js
+          node --check routes/yt.js
+          node --check tools/yt/app.js
+          node --check server.js
+      - name: OAuth and 83 language tests
+        run: node --test tests/ytOAuth.multiClient.test.mjs tests/ytLanguages.friend83.test.mjs
