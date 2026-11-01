@@ -35,7 +35,7 @@ def main() -> int:
     output = ROOT / NAME
     safe = []
     for path in tracked:
-        if path == ".env.example":
+        if path == ".env.example" or path.startswith("tools/social-studio/assets/fonts/"):
             continue
         if not path or path.startswith(".github/") or path.startswith(".git/"):
             continue
