@@ -835,6 +835,10 @@ function chunk(array, size) {
  * chars) end up needing more than 7.
  */
 const TRANSLATE_TOKEN_BUDGET = 12000;
+// Large Gemini requests (82 titles in a single call) can remain silent for minutes.
+// Bound each call independently from the total 83-language catalogue size.
+const MAX_TRANSLATE_BATCH_LANGUAGES = 12;
+const TRANSLATE_REQUEST_TIMEOUT_MS = 180000;
 
 // TASK CS-v2.1 작업 A 요구사항 3 — scope:'title'이면 언어당 출력량을
 // description이 아니라 title 길이로 추정한다. routes/yt.js의
@@ -843,7 +847,7 @@ function estimateBatchSize(scope, title, description, totalSelected) {
   const baseLength = Array.from((scope === 'title' ? title : description) || '').length;
   const perLanguageTokens = (baseLength + 100) / 2;
   const size = Math.floor(TRANSLATE_TOKEN_BUDGET / perLanguageTokens);
-  return Math.max(1, Math.min(totalSelected, size));
+  return Math.max(1, Math.min(totalSelected, size, MAX_TRANSLATE_BATCH_LANGUAGES));
 }
 
 /*
@@ -1000,20 +1004,42 @@ async function runOneScopeGroup(overallLanguages, languages, scope, { forcePaid 
   const missing = [];
   for (let i = 0; i < batches.length; i++) {
     const batch = batches[i];
-    const data = await api('/api/yt/translate', {
-      method: 'POST',
-      body: JSON.stringify({
-        title,
-        description,
-        // TASK CS-v2.6 — 라벨만이 아니라 코드도 보낸다. 서버는 코드로 캐시·중복·원본 충돌을 판단한다.
-        languages: batch.map(({ code, label }) => ({ code, label })),
-        sourceLanguageCode: state.sourceLanguage,
-        sourceLanguageLabel: languageLabel(state.sourceLanguage),
-        scope,
-        model: state.model,
-        ...(forcePaid ? { forcePaid: true } : {}),
-      }),
-    });
+    const controller = new AbortController();
+    const startedAt = Date.now();
+    const completed = overallLanguages.length - pendingLanguages(overallLanguages).length;
+    const statusPrefix = `[${scopeLabel} · 묶음 ${i + 1}/${batches.length} · ${completed}/${overallLanguages.length}개 완료]`;
+    const paintWaiting = () => {
+      $('progressText').textContent = `${statusPrefix} Gemini 응답 대기 중 · ${Math.floor((Date.now() - startedAt) / 1000)}초 경과`;
+    };
+    paintWaiting();
+    const heartbeat = setInterval(paintWaiting, 1000);
+    const timeout = setTimeout(() => controller.abort(), TRANSLATE_REQUEST_TIMEOUT_MS);
+    let data;
+    try {
+      data = await api('/api/yt/translate', {
+        method: 'POST',
+        signal: controller.signal,
+        body: JSON.stringify({
+          title,
+          description,
+          // TASK CS-v2.6 — preserve each BCP-47 code for caching and publishing.
+          languages: batch.map(({ code, label }) => ({ code, label })),
+          sourceLanguageCode: state.sourceLanguage,
+          sourceLanguageLabel: languageLabel(state.sourceLanguage),
+          scope,
+          model: state.model,
+          ...(forcePaid ? { forcePaid: true } : {}),
+        }),
+      });
+    } catch (error) {
+      if (error?.name === 'AbortError') {
+        throw new Error(`${Math.floor(TRANSLATE_REQUEST_TIMEOUT_MS / 1000)}초 동안 응답이 없어 대기를 종료했습니다. 기존 완료 번역은 보존됩니다. 서버에서 요청이 계속 처리 중일 수 있으니 즉시 재시도하지 말고 잠시 후 상태를 확인하세요.`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+      clearInterval(heartbeat);
+    }
     cacheHitCount += data.fromCache?.length || 0;
     if (data.missingLanguages?.length) {
       // TASK CS-v2.6 — missingLanguageCodes는 missingLanguages(라벨)와 같은 순서다.
@@ -1034,6 +1060,8 @@ async function runOneScopeGroup(overallLanguages, languages, scope, { forcePaid 
     upsertResults(data.results, data.scope || scope);
     renderResults();
     saveLocal();
+    // Advance at every completed batch, not only after the entire group finishes.
+    $('progressBar').style.width = `${Math.round(((overallLanguages.length - pendingLanguages(overallLanguages).length) / overallLanguages.length) * 100)}%`;
     // TASK CS-v2.1 후속 버그 [1] 요구사항 — 번역이 끝날 때마다(묶음 하나가
     // 끝날 때마다) 완료/남음을 알린다. [${scopeLabel}] 접두는 지금 어느
     // 그룹(제목만/제목+설명)을 처리 중인지 구분하기 위해 유지한다.
@@ -1090,7 +1118,7 @@ async function runScopedTranslate(languagesToProcess, { resetResults, forcePaid 
       const { cacheHitCount, missing } = await runOneScopeGroup(languagesToProcess, groups[g].languages, groups[g].scope, { forcePaid });
       cacheHitTotal += cacheHitCount;
       missingTotal.push(...missing);
-      $('progressBar').style.width = `${Math.round(((g + 1) / groups.length) * 100)}%`;
+      $('progressBar').style.width = `${Math.round(((languagesToProcess.length - pendingLanguages(languagesToProcess).length) / languagesToProcess.length) * 100)}%`;
     }
     const cacheNote = cacheHitTotal ? ` (캐시에서 ${cacheHitTotal}개 불러옴)` : '';
     $('progressText').textContent = `${languagesToProcess.length}개 언어 처리 완료${cacheNote}`;
