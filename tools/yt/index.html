@@ -197,7 +197,7 @@
       </p>
 
       <details id="oauthSetup" class="setup-box">
-        <summary>① 최초 1회 설정 — 구글 OAuth 클라이언트 만들기</summary>
+        <summary>① OAuth 클라이언트 설정 — 여러 구글 프로젝트 지원</summary>
         <ol class="setup-steps">
           <li><a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">Google Cloud Console &gt; 사용자 인증 정보</a>에서 프로젝트를 만듭니다.</li>
           <li>[API 및 서비스 &gt; 라이브러리]에서 <strong>YouTube Data API v3</strong>를 사용 설정합니다.</li>
@@ -228,9 +228,9 @@
           누르면 됩니다. “프로덕션”으로 게시하면 만료되지 않지만 구글 검수가 필요합니다.
         </p>
         <p class="hint">
-          <strong>이 ① 설정은 최초 1회로 끝납니다.</strong> 클라이언트 ID·보안 비밀번호(= 구글 클라우드 프로젝트)는
-          등록하는 <strong>모든 계정이 함께 씁니다</strong>. 채널을 몇 개 늘리든 여기를 다시 만들 필요가 없고,
-          계정마다 반복되는 것은 구글 동의 절차뿐입니다.
+          <strong>하나의 OAuth 클라이언트로 여러 계정을 연결할 수 있습니다.</strong> 다른 Google Cloud 프로젝트를
+          쓰고 싶다면 새 클라이언트 ID·비밀번호를 저장한 뒤 [계정 추가]를 누르세요.
+          기존 계정의 인증정보는 그대로 보존됩니다. 계정별로 사용한 클라이언트 정보도 독립 저장됩니다.
         </p>
       </details>
 
@@ -239,6 +239,9 @@
            여러 계정을 등록해 두고 골라 쓴다. -->
       <div class="account-box">
         <div class="account-add">
+          <select id="oauthClientSelect" aria-label="OAuth 클라이언트 선택">
+            <option value="">— 저장된 OAuth 클라이언트 선택 —</option>
+          </select>
           <input id="newAccountLabel" type="text" placeholder="새 계정 별명 (예: 일본 쇼와 카페)" autocomplete="off" />
           <button id="addAccountBtn" class="btn primary">＋ 계정 추가</button>
         </div>
@@ -247,13 +250,14 @@
           행을 클릭하면 그 계정이 <strong>선택한 계정</strong>이 됩니다. 아래 영상 목록·미리보기·등록은 모두 선택한 계정으로 나갑니다.
         </p>
         <ul class="account-notes">
-          <li>클라이언트 ID·보안 비밀번호는 <strong>모든 계정이 공유</strong>합니다. 계정을 추가할 때 다시 만들지 않아도 됩니다.</li>
+          <li>같은 OAuth 클라이언트로 여러 계정을 추가할 수 있으며, 서로 다른 클라이언트를 등록해도 기존 연결은 유지됩니다.</li>
+          <li>이미 '연결 안 됨'으로 나온 과거 계정은 <strong>그 계정에 원래 사용했던 클라이언트 ID·비밀번호를 먼저 저장</strong>한 뒤 [재연결]을 누르세요. 기존에 삭제된 토큰은 자동 복구되지 않습니다.</li>
           <li>계정을 추가할 때 구글 <strong>계정 선택 화면에서 반드시 다른 계정</strong>을 고르세요. 같은 계정을 다시 고르면
             채널이 하나 더 생기는 대신 기존 계정의 연결만 갱신됩니다.</li>
           <li>새 구글 계정(예: 아내 계정)은 Cloud Console의 [OAuth 동의 화면 &gt; <strong>테스트 사용자</strong>]에도
             추가해야 로그인됩니다. 빠뜨리면 구글이 “액세스 차단됨”으로 막습니다.</li>
-          <li>유튜브 하루 한도(10,000유닛)는 계정별이 아니라 <strong>클라우드 프로젝트 전체</strong>에 걸립니다.
-            소진되면 계정을 바꿔도 그날은 등록할 수 없습니다.</li>
+          <li>유튜브 API 한도는 <strong>Google Cloud 프로젝트별</strong>로 적용됩니다. 같은 프로젝트의 계정은 한도를 공유합니다.
+            서로 다른 프로젝트에 따로 한도가 있어도 계정 전환만으로 기존 프로젝트의 한도가 초기화되는 것은 아닙니다.</li>
         </ul>
       </div>
 

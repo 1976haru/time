@@ -1646,10 +1646,12 @@ function accountRowHtml(account, activeId) {
 
   const meta = [];
   meta.push(account.channelTitle ? `채널: ${escapeHtml(account.channelTitle)}` : '채널 미확인');
+  if (account.clientIdPreview) meta.push(`OAuth: ${escapeHtml(account.clientIdPreview)}`);
   if (!account.hasToken) {
     meta.push('<span class="bad">연결 안 됨 — [재연결] 필요</span>');
-  } else if (account.connectionAgeDays !== null && account.connectionAgeDays !== undefined) {
-    meta.push(`${account.connectionAgeDays}일 전 연결`);
+  } else {
+    meta.push('인증정보 저장됨 · API 사용 시 유효성 확인');
+    if (account.connectionAgeDays !== null && account.connectionAgeDays !== undefined) meta.push(`${account.connectionAgeDays}일 전 연결`);
   }
   if (account.hasToken && account.probablyExpired) {
     meta.push(`<span class="warn">${publishState.oauth?.testingTokenDays ?? 7}일 만료 가능 · 재연결 권장</span>`);
@@ -1688,6 +1690,12 @@ async function loadOAuthStatus() {
     publishState.oauth = status;
     $('redirectUriBox').textContent = status.redirectUri;
     if (status.clientIdPreview && !$('clientIdInput').value) $('clientIdInput').placeholder = status.clientIdPreview;
+    const clientSelect = $('oauthClientSelect');
+    if (clientSelect) {
+      clientSelect.innerHTML = '<option value="">— 저장된 OAuth 클라이언트 선택 —</option>' +
+        (status.clients || []).map((client) => `<option value="${escapeHtml(client.id)}">${escapeHtml(client.label)} · ${escapeHtml(client.preview)} (${client.accountCount}계정)</option>`).join('');
+      clientSelect.value = status.activeClientKey || '';
+    }
 
     const badges = [];
     badges.push(`<span class="badge ${status.hasClient ? 'ok' : 'warn'}">OAuth 클라이언트 ${status.hasClient ? '설정됨' : '필요'}</span>`);
@@ -1724,14 +1732,14 @@ async function saveOAuthClient() {
       }),
     });
     $('clientSecretInput').value = '';
-    showToast('클라이언트 정보를 저장했습니다. 이제 [＋ 계정 추가]를 눌러 주세요.');
+    showToast('새 계정용 OAuth 클라이언트를 저장했습니다. 기존 계정 연결은 그대로 유지됩니다.');
     await loadOAuthStatus();
   } catch (error) {
     setError('publishError', error.message);
   }
 }
 
-function openConsentPopup({ label = '', reconnectId = '' } = {}) {
+function openConsentPopup({ label = '', reconnectId = '', clientKey = '' } = {}) {
   if (!publishState.oauth?.hasClient) {
     $('oauthSetup').open = true;
     return setError('publishError', '먼저 구글 OAuth 클라이언트 ID와 보안 비밀번호를 저장해 주세요.');
@@ -1740,6 +1748,7 @@ function openConsentPopup({ label = '', reconnectId = '' } = {}) {
   const query = new URLSearchParams();
   if (label) query.set('label', label);
   if (reconnectId) query.set('reconnect', reconnectId);
+  if (clientKey) query.set('client', clientKey);
   // A popup, not a redirect: this tool runs inside the Creator Studio shell's
   // iframe and would otherwise navigate the whole app away to Google.
   window.open(`/api/yt/oauth/start?${query.toString()}`, 'creator-studio-yt-oauth', 'width=520,height=680');
@@ -1747,7 +1756,8 @@ function openConsentPopup({ label = '', reconnectId = '' } = {}) {
 
 function addAccount() {
   const label = $('newAccountLabel').value.trim();
-  openConsentPopup({ label });
+  const clientKey = $('oauthClientSelect')?.value || publishState.oauth?.activeClientKey || '';
+  openConsentPopup({ label, clientKey });
   $('newAccountLabel').value = '';
   showToast('구글 계정 선택 화면에서 반드시 "다른 계정"을 골라 주세요.');
 }
@@ -1816,7 +1826,10 @@ function handleAccountListClick(event) {
     }
     if (action === 'reconnect') {
       const account = (publishState.oauth?.accounts || []).find((item) => item.id === accountId);
-      return openConsentPopup({ reconnectId: accountId, label: account?.label || '' });
+      // A disconnected legacy account may need a non-default issuing client.
+      // Connected accounts still use their pinned issuing client server-side.
+      const clientKey = $('oauthClientSelect')?.value || '';
+      return openConsentPopup({ reconnectId: accountId, label: account?.label || '', clientKey });
     }
     if (action === 'delete') return deleteAccount(accountId);
     return;

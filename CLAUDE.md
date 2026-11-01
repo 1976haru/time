@@ -214,13 +214,13 @@ videos.list(part=snippet,localizations)
 
 ### 4.4.1 계정 다중 등록 (CS-v2.4)
 
-`.yt_oauth.json`은 `{ clientId, clientSecret, accounts: [...], activeAccountId }`입니다.
-`accounts[]` 각 항목은 `{ id, label, refreshToken, channelId, channelTitle, connectedAt }`.
+`.yt_oauth.json`은 v3 `{ version, clientId, clientSecret, clients: [...], accounts: [...], activeAccountId }`입니다.
+`accounts[]` 각 항목은 발급 클라이언트, refresh token, channelId를 독립적으로 고정합니다.
 
-**구조상 핵심 — 이걸 놓치면 설계가 틀어집니다: OAuth 클라이언트(clientId + clientSecret =
-구글 클라우드 프로젝트)는 모든 계정이 공유하고, refresh token만 계정별입니다.** 그래서 Cloud
-Console 설정은 채널을 몇 개 늘리든 최초 1회로 끝나고, 계정마다 반복되는 것은 구글 동의
-절차뿐입니다. 계정 추가 화면에서 클라이언트 ID를 다시 묻지 마세요.
+**OAuth 클라이언트 하나로 여러 계정을 연결할 수도 있고, 계정마다 다른 Cloud 프로젝트를 쓸 수도 있습니다.**
+새 기본 클라이언트를 저장해도 기존 계정의 클라이언트·refresh token을 수정하지 마세요.
+인증 시작 시점의 클라이언트는 state에 고정하고, 콜백에서 토큰과 실제 채널을 검증한 뒤에만 저장합니다.
+저장은 임시 파일 후 교체하고, 직전 원본을 `.yt_oauth.json.bak`에 보존합니다.
 
 - 계정 id는 채널 id가 아니라 생성된 랜덤 값(`acc_` + hex)입니다. 동의가 끝나기 전에는 어느
   채널인지 알 수 없는데 행은 먼저 있어야 하기 때문입니다(라벨을 구글 왕복 너머로 실어 나르는

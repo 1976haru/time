@@ -8,6 +8,7 @@ import { currentKey, hasPaidKey } from '../lib/keyStore.js';
 import { extractKeyless, fallbackOEmbed } from '../lib/ytKeyless.js';
 import {
   buildAuthUrl,
+  assertAccountOwnsChannel,
   connectionAgeDays,
   consumeState,
   disconnect,
@@ -17,6 +18,7 @@ import {
   hasClientCredentials,
   isProbablyExpired,
   listAccounts,
+  listOAuthClients,
   readOAuthFile,
   redirectUri,
   rememberChannel,
@@ -1240,7 +1242,9 @@ function oauthStatePayload(port) {
   const file = readOAuthFile();
   return {
     hasClient: hasClientCredentials(),
+    activeClientKey: file.clientId ? file.clients.find((client) => client.clientId === file.clientId)?.id || '' : '',
     activeAccountId: file.activeAccountId || '',
+    clients: listOAuthClients(),
     accounts: listAccounts().map((account) => ({
       id: account.id,
       label: account.label,
@@ -1250,6 +1254,9 @@ function oauthStatePayload(port) {
       connectionAgeDays: connectionAgeDays(account),
       probablyExpired: isProbablyExpired(account),
       hasToken: Boolean(account.refreshToken),
+      credentialStatus: account.refreshToken ? 'stored_unverified' : 'missing',
+      clientIdPreview: account.clientId ? `${account.clientId.slice(0, 12)}…` : '',
+      clientKey: account.clientId ? file.clients.find((client) => client.clientId === account.clientId)?.id || '' : '',
     })),
     testingTokenDays: TESTING_REFRESH_TOKEN_DAYS,
     redirectUri: redirectUri(port),
@@ -1273,6 +1280,7 @@ router.get('/oauth/start', (req, res, next) => {
     res.redirect(buildAuthUrl(req.socket.localPort, {
       label: String(req.query.label || ''),
       reconnectId: String(req.query.reconnect || ''),
+      clientKey: String(req.query.client || ''),
     }));
   } catch (error) { next(error); }
 });
@@ -1317,34 +1325,10 @@ setTimeout(function(){window.close();},${ok ? 1800 : 6000});</script></body></ht
     if (req.query.error) throw new Error(`구글에서 권한을 거부했습니다: ${req.query.error}`);
     const pending = consumeState(req.query.state);
     if (!pending) throw new Error('요청 검증에 실패했습니다(state 불일치). 연결을 처음부터 다시 시도해 주세요.');
-    const { accountId } = await exchangeCodeForTokens(req.query.code, req.socket.localPort, pending);
-
-    let channelTitle = '';
-    let duplicateOf = null;
-    try {
-      const channels = await youtubeApi('channels', { query: { part: 'snippet', mine: 'true' }, accountId });
-      const channel = channels?.items?.[0];
-      if (channel) {
-        channelTitle = channel.snippet?.title || '';
-        ({ duplicateOf } = rememberChannel(accountId, { channelId: channel.id, channelTitle }));
-      }
-    } catch { /* the connection itself succeeded; the channel name is a nicety */ }
-
-    // TASK CS-v2.4 — 같은 채널이 두 번 등록되면 사용자는 "일본 채널을 추가했다"고
-    // 믿는데 실제로는 한국 채널이 하나 더 생긴 것이라, 그 행을 골라 등록하면
-    // 한국 채널에 일본어 제목이 올라간다. 조용히 성공으로 보이면 안 된다.
-    if (duplicateOf) {
-      return res.send(page(
-        '이미 등록된 채널입니다',
-        `${escapeHtml(duplicateOf.label)}의 연결을 갱신했습니다.<br />` +
-        '다른 채널을 추가하시려면 구글 계정 선택 화면에서 <b>다른 계정</b>을 골라 주세요.',
-        true
-      ));
-    }
-
+    const { channelTitle } = await exchangeCodeForTokens(req.query.code, req.socket.localPort, pending);
     res.send(page('연결되었습니다', `${channelTitle ? `채널: ${escapeHtml(channelTitle)}<br />` : ''}이 창은 곧 자동으로 닫힙니다.`));
   } catch (error) {
-    res.status(400).send(page('연결하지 못했습니다', String(error.message || error), false));
+    res.status(Number(error.status) || 400).send(page('연결하지 못했습니다', escapeHtml(error.message || error), false));
   }
 });
 
@@ -1445,13 +1429,7 @@ router.post('/publish-localizations', async (req, res, next) => {
     // 하나뿐이던 v1.6에서는 거의 형식적인 검사였지만, 다계정에서는 계정을 잘못
     // 고르는 일이 실제로 일어난다 — 그리고 그 결과가 내 다른 채널에 대한 잘못된
     // 쓰기다. 그래서 고칠 방법("계정을 바꾸세요")이 메시지에서 바로 보여야 한다.
-    const myChannelId = account.channelId;
-    if (myChannelId && video.snippet?.channelId && video.snippet.channelId !== myChannelId) {
-      throw Object.assign(
-        new Error(`선택한 계정 "${account.label}"의 채널 영상이 아닙니다. 계정 목록에서 이 영상이 올라간 채널을 고른 뒤 다시 시도해 주세요.`),
-        { status: 403 }
-      );
-    }
+    assertAccountOwnsChannel(account, video.snippet?.channelId);
 
     const existing = video.localizations || {};
     const overwriting = planned.filter((p) => existing[p.code]).map((p) => p.code);

@@ -10,6 +10,8 @@ tools/social-studio/out/
 .gemini_limits.json
 .yt_translation_cache.json
 .yt_oauth.json
+.yt_oauth.json.bak
+..yt_oauth.json.*.tmp
 # 아래 *.log 패턴에 이미 걸리지만, Gemini/YouTube 실패 진단 로그(요청 내용 일부
 # 포함)라 명시적으로도 적어둔다.
 .gemini_errors.log
