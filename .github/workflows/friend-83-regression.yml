@@ -24,3 +24,22 @@ jobs:
           node --check server.js
       - name: OAuth and 83 language tests
         run: node --test tests/ytOAuth.multiClient.test.mjs tests/ytLanguages.friend83.test.mjs
+      - name: Server language endpoint smoke test
+        run: |
+          node server.js > /tmp/creator-studio.log 2>&1 &
+          PID=$!
+          trap 'kill $PID 2>/dev/null || true' EXIT
+          for n in 1 2 3 4 5 6 7 8 9 10; do
+            if curl -fsS http://localhost:5300/api/yt/languages > /tmp/languages.json; then break; fi
+            sleep 1
+          done
+          node -e "const fs=require('fs');let x=JSON.parse(fs.readFileSync('/tmp/languages.json','utf8'));if(x.languages.length!==83 || x.source!=='fallback')process.exit(1);console.log('PASS /api/yt/languages fallback count:',x.languages.length)"
+      - name: Build shareable 83-language friend ZIP
+        run: python3 scripts/build_friend_zip.py
+      - name: Publish tested ZIP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CreatorStudio_Friend_83_Languages_MultiAccount
+          path: CreatorStudio_Friend_83_Languages_MultiAccount.zip
+          if-no-files-found: error
+          retention-days: 30
