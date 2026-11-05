@@ -45,3 +45,12 @@ jobs:
           path: CreatorStudio_Friend_83_Languages_MultiAccount.zip
           if-no-files-found: error
           retention-days: 30
+      - name: Build timeline SRT-only upgrade ZIP
+        run: python3 scripts/build_timeline_srt_patch.py
+      - name: Publish timeline SRT patch artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CreatorStudio_Timeline_SRT_12to15s_Patch
+          path: CreatorStudio_Timeline_SRT_12to15s_Patch.zip
+          if-no-files-found: error
+          retention-days: 30
