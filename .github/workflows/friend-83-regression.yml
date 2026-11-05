@@ -3,6 +3,7 @@ on:
   push:
     branches:
       - 'release/creator-studio-83-multiaccount-friend-20261101'
+      - 'feature/timeline-srt-12-15s-20261106'
   workflow_dispatch:
 jobs:
   test:
@@ -22,8 +23,9 @@ jobs:
           node --check routes/yt.js
           node --check tools/yt/app.js
           node --check server.js
+          node --check tools/timeline/srt.js
       - name: OAuth and 83 language tests
-        run: node --test tests/ytOAuth.multiClient.test.mjs tests/ytLanguages.friend83.test.mjs tests/ytLargeBatchStall.test.mjs
+        run: node --test tests/ytOAuth.multiClient.test.mjs tests/ytLanguages.friend83.test.mjs tests/ytLargeBatchStall.test.mjs tests/timelineSrt.test.mjs
       - name: Server language endpoint smoke test
         run: |
           node server.js > /tmp/creator-studio.log 2>&1 &
@@ -41,5 +43,14 @@ jobs:
         with:
           name: CreatorStudio_Friend_83_Languages_MultiAccount
           path: CreatorStudio_Friend_83_Languages_MultiAccount.zip
+          if-no-files-found: error
+          retention-days: 30
+      - name: Build timeline SRT-only upgrade ZIP
+        run: python3 scripts/build_timeline_srt_patch.py
+      - name: Publish timeline SRT patch artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CreatorStudio_Timeline_SRT_12to15s_Patch
+          path: CreatorStudio_Timeline_SRT_12to15s_Patch.zip
           if-no-files-found: error
           retention-days: 30

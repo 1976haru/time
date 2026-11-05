@@ -243,6 +243,15 @@
             <option value="alwaysHours">항상 HH:MM:SS</option>
           </select>
         </label>
+        <label class="field">
+          SRT 제목 자막 표시 시간
+          <select id="srtSeconds">
+            <option value="12" selected>12초 (기본)</option>
+            <option value="13">13초</option>
+            <option value="14">14초</option>
+            <option value="15">15초</option>
+          </select>
+        </label>
       </div>
 
       <div class="button-row">
@@ -352,12 +361,25 @@
       </div>
     </section>
 
+    <section id="srtPanel" class="panel hidden">
+      <div class="summary">
+        <span class="badge">유튜브 제목 자막 (SRT)</span>
+        <span>타임라인과 함께 자동 생성 · 각 곡 시작에 연번 + 제목만 표시 · 12~15초 후 사라짐</span>
+      </div>
+      <textarea id="srtOutput" spellcheck="false" readonly style="min-height:176px;"></textarea>
+      <div class="button-row">
+        <button id="downloadSrtBtn" class="primary">⬇ SRT 자막 다운로드</button>
+      </div>
+      <p class="small">곡이 짧으면 현재 곡의 종료 시점까지만 표시합니다. 2회 이상 반복 시 각 회차의 연번은 01부터 다시 시작합니다. 가사나 괄호 속 번역 제목은 포함하지 않습니다.</p>
+    </section>
+
     <footer>
       WAV 지원 범위: 일반 PCM/IEEE Float WAV 및 브라우저가 재생 가능한 WAV 파일.
       일부 특수 코덱 WAV는 브라우저에서 길이를 읽지 못할 수 있으며, 이때 길이를 직접 입력하면 됩니다.
     </footer>
   </main>
 
+<script src="./srt.js"></script>
 <script>
 (() => {
   const $ = (id) => document.getElementById(id);
@@ -367,6 +389,8 @@
   const trackBody = $("trackBody");
   const outputPanel = $("outputPanel");
   const output = $("output");
+  const srtPanel = $("srtPanel");
+  const srtOutput = $("srtOutput");
   const statusEl = $("status");
   const renamePanel = $("renamePanel");
   const folderPathInput = $("folderPathInput");
@@ -1164,6 +1188,8 @@
     $("clearBtn").disabled = empty;
     if (empty) {
       outputPanel.classList.add("hidden");
+      srtPanel.classList.add("hidden");
+      srtOutput.value = "";
       setStatus("아직 선택된 파일이 없습니다.");
     }
   }
@@ -1188,11 +1214,12 @@
     let cursor = startCursor;
     const rows = [];
     for (let round = 0; round < repeatCount; round++) {
-      for (const track of trackList) {
+      for (const [trackIndex, track] of trackList.entries()) {
         const title = track.title.trim() || splitBracketTitle(cleanTitle(track.file.name)).title;
         rows.push({
           start: cursor,
           title,
+          trackNumber: trackIndex + 1,
           // TASK CS-v1.6 — resolved here, once, so the textarea and the CSV
           // can never show a different bracket than each other.
           bracket: bracketSuffix(track),
@@ -1241,7 +1268,11 @@
     generatedRows = rows.map(row => ({ ...row, timestamp: formatTime(row.start, alwaysHours) }));
 
     output.value = generatedRows.map(row => `${row.timestamp} ${row.title}${row.bracket || ""}`).join("\n");
+    // The SRT is built from the SAME rows/timestamps as the YouTube chapter list.
+    // This is deliberately local-only, so no AI key, server request or audio upload is required.
+    srtOutput.value = globalThis.TimelineSrt.buildTimelineSrt(generatedRows, Number($("srtSeconds").value));
     outputPanel.classList.remove("hidden");
+    srtPanel.classList.remove("hidden");
     setStatus(
       repeatCount > 1
         ? `타임라인을 생성했습니다 (전체 ${tracks.length}곡 × ${repeatCount}회 반복). 마지막 종료 시각은 ${formatTime(endCursor - gap, true)}입니다.`
@@ -1331,10 +1362,23 @@
     setStatus("파일명 기준으로 정렬했습니다.", "success");
   });
   $("generateBtn").addEventListener("click", generateTimeline);
+  $("srtSeconds").addEventListener("change", () => {
+    if (!generatedRows.length) return;
+    srtOutput.value = globalThis.TimelineSrt.buildTimelineSrt(generatedRows, Number($("srtSeconds").value));
+    setStatus(`SRT 자막 표시 시간을 ${$("srtSeconds").value}초로 변경했습니다.`, "success");
+  });
+  $("downloadSrtBtn").addEventListener("click", () => {
+    if (!srtOutput.value) return setStatus("먼저 타임라인을 생성해 주세요.", "error");
+    const seconds = $("srtSeconds").value;
+    downloadBlob("\uFEFF" + srtOutput.value, `youtube_track_titles_${seconds}s.srt`, "application/x-subrip;charset=utf-8");
+    setStatus(`곡 시작 제목 자막 ${generatedRows.length}개를 SRT 파일로 저장했습니다.`, "success");
+  });
   $("clearBtn").addEventListener("click", () => {
     tracks = [];
     generatedRows = [];
     output.value = "";
+    srtOutput.value = "";
+    srtPanel.classList.add("hidden");
     renderTracks();
     updateButtons();
   });
